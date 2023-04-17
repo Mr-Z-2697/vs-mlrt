@@ -1,4 +1,4 @@
-__version__ = "3.16.7"
+__version__ = "3.16.10"
 
 __all__ = [
     "Backend", "BackendV2",
@@ -197,7 +197,8 @@ class Waifu2xModel(enum.IntEnum):
     upresnet10 = 5
     cunet = 6
     swin_unet_art = 7
-    swin_unet_photo = 8
+    swin_unet_photo = 8 # 20230329
+    swin_unet_photo_v2 = 9 # 20230407
 
 
 def Waifu2x(
@@ -207,7 +208,7 @@ def Waifu2x(
     tiles: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     tilesize: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     overlap: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
-    model: typing.Literal[0, 1, 2, 3, 4, 5, 6, 7, 8] = 6,
+    model: typing.Literal[0, 1, 2, 3, 4, 5, 6, 7, 8, 9] = 6,
     backend: backendT = Backend.TRT(),
     preprocess: bool = True
 ) -> vs.VideoNode:
@@ -227,7 +228,7 @@ def Waifu2x(
         raise ValueError(f'{func_name}: "scale" must be 1, 2 or 4')
 
     if not isinstance(model, int) or model not in Waifu2xModel.__members__.values():
-        raise ValueError(f'{func_name}: "model" must be 0, 1, 2, 3, 4, 5, 6, 7 or 8')
+        raise ValueError(f'{func_name}: "model" must be in [0, 9]')
 
     if model == 0 and noise == 0:
         raise ValueError(
@@ -245,7 +246,7 @@ def Waifu2x(
         raise ValueError(f'{func_name}: "clip" must be of RGB color family')
 
     if overlap is None:
-        overlap_w = overlap_h = [8, 8, 8, 8, 8, 4, 4, 4, 4][model]
+        overlap_w = overlap_h = [8, 8, 8, 8, 8, 4, 4, 4, 4, 4][model]
     elif isinstance(overlap, int):
         overlap_w = overlap_h = overlap
     else:
@@ -326,7 +327,7 @@ def Waifu2x(
                 model_name = f"noise{noise}.onnx"
             else:
                 model_name = f"noise{noise}_{scale_name}.onnx"
-    elif model == 8:
+    elif model in (8, 9):
         scale_name = "scale4x"
         if noise == -1:
             model_name = f"{scale_name}.onnx"
@@ -353,7 +354,7 @@ def Waifu2x(
             kovrspl=2
         )
 
-    elif model == 8 and scale != 4:
+    elif model in (8, 9) and scale != 4:
         clip = core.resize.Bicubic(
             clip, clip.width * scale // 4, clip.height * scale // 4,
             filter_param_a=0, filter_param_b=0.5
@@ -845,19 +846,18 @@ def RIFEMerge(
     multiple = int(multiple_frac.numerator)
     scale = float(Fraction(scale))
 
-    # use v2 implementation by default
     network_path = os.path.join(
         models_path,
         "rife_v2",
         f"rife_v{model // 10}.{model % 10}{'_ensemble' if ensemble else ''}.onnx"
     )
-    if _implementation != 1 and os.path.exists(network_path) and scale == 1.0:
+    if _implementation == 2 and os.path.exists(network_path) and scale == 1.0:
         implementation_version = 2
         multiple = 1 # v2 implements internal padding
         clips = [clipa, clipb, mask]
     else:
         implementation_version = 1
-        # v2 onnx not found, try v1
+
         network_path = os.path.join(
             models_path,
             "rife",
@@ -1712,7 +1712,6 @@ def fmtc_resample(clip: vs.VideoNode, **kwargs) -> vs.VideoNode:
     clip = core.fmtc.resample(clip, **kwargs)
 
     if clip.format.bits_per_sample != clip_org.format.bits_per_sample:
-        format = clip.format.replace(core=core, bits_per_sample=clip_org.format.bits_per_sample)
-        clip = core.resize.Point(clip, format=format)
+        clip = core.resize.Point(clip, format=clip_org.format)
 
     return clip
