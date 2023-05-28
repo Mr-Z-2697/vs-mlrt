@@ -1,4 +1,4 @@
-__version__ = "3.16.10"
+__version__ = "3.17.6"
 
 __all__ = [
     "Backend", "BackendV2",
@@ -12,10 +12,12 @@ __all__ = [
 ]
 
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import enum
 import math
 import os
+import os.path
+import platform
 import subprocess
 import sys
 import tempfile
@@ -122,7 +124,7 @@ class Backend:
         num_streams: int = 1
         use_cublas: bool = False # cuBLAS + cuBLASLt
         static_shape: bool = False
-        tf32: bool = True
+        tf32: bool = False
         log: bool = True
 
         # as of TensorRT 8.4, it can be turned off without performance penalty in most cases
@@ -136,6 +138,7 @@ class Backend:
         force_fp16: bool = False
         builder_optimization_level: int = 3
         max_aux_streams: typing.Optional[int] = None
+        short_path: typing.Optional[bool] = None # True on Windows by default, False otherwise
 
         # internal backend attributes
         supports_onnx_serialization: bool = False
@@ -199,6 +202,7 @@ class Waifu2xModel(enum.IntEnum):
     swin_unet_art = 7
     swin_unet_photo = 8 # 20230329
     swin_unet_photo_v2 = 9 # 20230407
+    swin_unet_art_scan = 10 # 20230504
 
 
 def Waifu2x(
@@ -208,7 +212,7 @@ def Waifu2x(
     tiles: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     tilesize: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     overlap: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
-    model: typing.Literal[0, 1, 2, 3, 4, 5, 6, 7, 8, 9] = 6,
+    model: Waifu2xModel = Waifu2xModel.cunet,
     backend: backendT = Backend.TRT(),
     preprocess: bool = True
 ) -> vs.VideoNode:
@@ -228,7 +232,7 @@ def Waifu2x(
         raise ValueError(f'{func_name}: "scale" must be 1, 2 or 4')
 
     if not isinstance(model, int) or model not in Waifu2xModel.__members__.values():
-        raise ValueError(f'{func_name}: "model" must be in [0, 9]')
+        raise ValueError(f'{func_name}: invalid "model"')
 
     if model == 0 and noise == 0:
         raise ValueError(
@@ -246,7 +250,7 @@ def Waifu2x(
         raise ValueError(f'{func_name}: "clip" must be of RGB color family')
 
     if overlap is None:
-        overlap_w = overlap_h = [8, 8, 8, 8, 8, 4, 4, 4, 4, 4][model]
+        overlap_w = overlap_h = [8, 8, 8, 8, 8, 4, 4, 4, 4, 4, 4][model]
     elif isinstance(overlap, int):
         overlap_w = overlap_h = overlap
     else:
@@ -327,7 +331,7 @@ def Waifu2x(
                 model_name = f"noise{noise}.onnx"
             else:
                 model_name = f"noise{noise}_{scale_name}.onnx"
-    elif model in (8, 9):
+    elif model in (8, 9, 10):
         scale_name = "scale4x"
         if noise == -1:
             model_name = f"{scale_name}.onnx"
@@ -354,7 +358,7 @@ def Waifu2x(
             kovrspl=2
         )
 
-    elif model in (8, 9) and scale != 4:
+    elif model in (8, 9, 10) and scale != 4:
         clip = core.resize.Bicubic(
             clip, clip.width * scale // 4, clip.height * scale // 4,
             filter_param_a=0, filter_param_b=0.5
@@ -377,7 +381,7 @@ def DPIR(
     tiles: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     tilesize: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     overlap: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
-    model: typing.Literal[0, 1, 2, 3] = 0,
+    model: DPIRModel = DPIRModel.drunet_gray,
     backend: backendT = Backend.TRT()
 ) -> vs.VideoNode:
 
@@ -390,7 +394,7 @@ def DPIR(
         raise ValueError(f"{func_name}: only constant format 16/32 bit float input supported")
 
     if not isinstance(model, int) or model not in DPIRModel.__members__.values():
-        raise ValueError(f'{func_name}: "model" must be 0, 1, 2 or 3')
+        raise ValueError(f'{func_name}: invalid "model"')
 
     if model in [0, 2] and clip.format.color_family != vs.GRAY:
         raise ValueError(f'{func_name}: "clip" must be of GRAY color family')
@@ -468,6 +472,12 @@ class RealESRGANModel(enum.IntEnum):
     animevideo_xsx4 = 1
     # v3
     animevideov3 = 2 # 4x
+    # contributed: janai(2x) https://github.com/the-database/mpv-upscale-2x_animejanai/releases/tag/1.0.0 maintainer: hooke007 
+    animejanaiL1_sharp = 5000
+    animejanaiL2_std = 5001
+    animejanaiL2_sharp = 5002
+    animejanaiL3_std = 5003
+    animejanaiL3_sharp = 5004
 
 RealESRGANv2Model = RealESRGANModel
 
@@ -477,7 +487,7 @@ def RealESRGAN(
     tiles: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     tilesize: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     overlap: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
-    model: typing.Literal[0, 1, 2] = 0,
+    model: RealESRGANv2Model = RealESRGANv2Model.animevideo_xsx2,
     backend: backendT = Backend.TRT(),
     scale: typing.Optional[float] = None
 ) -> vs.VideoNode:
@@ -494,7 +504,7 @@ def RealESRGAN(
         raise ValueError(f'{func_name}: "clip" must be of RGB color family')
 
     if not isinstance(model, int) or model not in RealESRGANv2Model.__members__.values():
-        raise ValueError(f'{func_name}: "model" must be 0, 1 or 2')
+        raise ValueError(f'{func_name}: invalid "model"')
 
     if overlap is None:
         overlap_w = overlap_h = 8
@@ -528,6 +538,12 @@ def RealESRGAN(
             models_path,
             "RealESRGANv2",
             "realesr-animevideov3.onnx"
+        )
+    elif model in [5000, 5001, 5002, 5003, 5004]:
+        network_path = os.path.join(
+            models_path,
+            "RealESRGANv2",
+            f"{RealESRGANv2Model(model).name}.onnx".replace('_', '-')
         )
 
     clip_org = clip
@@ -564,7 +580,6 @@ def CUGAN(
     tilesize: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     overlap: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     backend: backendT = Backend.TRT(),
-    preprocess: bool = True,
     alpha: float = 1.0,
     version: typing.Literal[1, 2] = 1, # 1: legacy, 2: pro
     conformance: bool = True # currently specifies dynamic range compression for cugan-pro
@@ -608,8 +623,6 @@ def CUGAN(
         overlap_w, overlap_h = overlap
 
     multiple = 2
-
-    width, height = clip.width, clip.height
 
     (tile_w, tile_h), (overlap_w, overlap_h) = calc_tilesize(
         tiles=tiles, tilesize=tilesize,
@@ -794,7 +807,7 @@ def RIFEMerge(
     tiles: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     tilesize: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     overlap: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
-    model: typing.Literal[40, 42, 43, 44, 45, 46] = 44,
+    model: RIFEModel = RIFEModel.v4_4,
     backend: backendT = Backend.TRT(),
     ensemble: bool = False,
     _implementation: typing.Optional[typing.Literal[1, 2]] = None
@@ -953,7 +966,7 @@ def RIFE(
     tiles: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     tilesize: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     overlap: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
-    model: typing.Literal[40, 42, 43, 44, 45, 46] = 44,
+    model: RIFEModel = RIFEModel.v4_4,
     backend: backendT = Backend.TRT(),
     ensemble: bool = False,
     _implementation: typing.Optional[typing.Literal[1, 2]] = None
@@ -1053,7 +1066,8 @@ def get_engine_path(
     input_format: int,
     output_format: int,
     builder_optimization_level: int,
-    max_aux_streams: typing.Optional[int]
+    max_aux_streams: typing.Optional[int],
+    short_path: typing.Optional[bool]
 ) -> str:
 
     with open(network_path, "rb") as file:
@@ -1068,19 +1082,18 @@ def get_engine_path(
         device_name = f"device{device_id}"
 
     if static_shape:
-        shape_str = f".{opt_shapes[0]}x{opt_shapes[1]}"
+        shape_str = f"{opt_shapes[0]}x{opt_shapes[1]}"
     else:
         shape_str = (
-            f".min{min_shapes[0]}x{min_shapes[1]}"
+            f"min{min_shapes[0]}x{min_shapes[1]}"
             f"_opt{opt_shapes[0]}x{opt_shapes[1]}"
             f"_max{max_shapes[0]}x{max_shapes[1]}"
         )
 
-    return (
-        network_path +
+    identity = (
         shape_str +
         ("_fp16" if fp16 else "") +
-        ("_no-tf32" if not tf32 else "") +
+        ("_tf32" if tf32 else "") +
         (f"_workspace{workspace}" if workspace is not None else "") +
         f"_opt{builder_optimization_level}" +
         (f"_max-aux-streams{max_aux_streams}" if max_aux_streams is not None else "") +
@@ -1090,9 +1103,14 @@ def get_engine_path(
         "_I-" + ("fp32" if input_format == 0 else "fp16") +
         "_O-" + ("fp32" if output_format == 0 else "fp16") +
         f"_{device_name}" +
-        f"_{checksum:x}" +
-        ".engine"
+        f"_{checksum:x}"
     )
+
+    if short_path or (short_path is None and platform.system() == "Windows"):
+        dirname, basename = os.path.split(network_path)
+        return os.path.join(dirname, f"{zlib.crc32((basename + identity).encode()):x}.engine")
+    else:
+        return f"{network_path}.{identity}.engine"
 
 
 def trtexec(
@@ -1107,7 +1125,7 @@ def trtexec(
     use_cuda_graph: bool = False,
     use_cublas: bool = False,
     static_shape: bool = True,
-    tf32: bool = True,
+    tf32: bool = False,
     log: bool = False,
     use_cudnn: bool = True,
     use_edge_mask_convolutions: bool = True,
@@ -1120,7 +1138,8 @@ def trtexec(
     faster_dynamic_shapes: bool = True,
     force_fp16: bool = False,
     builder_optimization_level: int = 3,
-    max_aux_streams: typing.Optional[int] = None
+    max_aux_streams: typing.Optional[int] = None,
+    short_path: typing.Optional[bool] = None
 ) -> str:
 
     # tensort runtime version, e.g. 8401 => 8.4.1
@@ -1151,7 +1170,8 @@ def trtexec(
         input_format=input_format,
         output_format=output_format,
         builder_optimization_level=builder_optimization_level,
-        max_aux_streams=max_aux_streams
+        max_aux_streams=max_aux_streams,
+        short_path=short_path
     )
 
     if os.access(engine_path, mode=os.R_OK):
@@ -1207,17 +1227,38 @@ def trtexec(
     if verbose:
         args.append("--verbose")
 
-    disabled_tactic_sources = []
-    if not use_cublas:
-        disabled_tactic_sources.extend(["-CUBLAS", "-CUBLAS_LT"])
-    if not use_cudnn:
-        disabled_tactic_sources.append("-CUDNN")
-    if not use_edge_mask_convolutions and trt_version >= 8401:
-        disabled_tactic_sources.append("-EDGE_MASK_CONVOLUTIONS")
-    if not use_jit_convolutions and trt_version >= 8500:
-        disabled_tactic_sources.append("-JIT_CONVOLUTIONS")
-    if disabled_tactic_sources:
-        args.append(f"--tacticSources={','.join(disabled_tactic_sources)}")
+    preview_features = []
+    if (use_cublas or use_cudnn) and trt_version >= 8600:
+        preview_features.append("-disableExternalTacticSourcesForCore0805")
+
+    if preview_features and trt_version >= 8500:
+        args.append(f"--preview={','.join(preview_features)}")
+
+    tactic_sources = []
+
+    if use_cublas:
+        tactic_sources.extend(["+CUBLAS", "+CUBLAS_LT"])
+    else:
+        tactic_sources.extend(["-CUBLAS", "-CUBLAS_LT"])
+
+    if use_cudnn:
+        tactic_sources.append("+CUDNN")
+    else:
+        tactic_sources.append("-CUDNN")
+
+    if trt_version >= 8401:
+        if use_edge_mask_convolutions:
+            tactic_sources.append("+EDGE_MASK_CONVOLUTIONS")
+        else:
+            tactic_sources.append("-EDGE_MASK_CONVOLUTIONS")
+
+    if trt_version >= 8500:
+        if use_jit_convolutions:
+            tactic_sources.append("+JIT_CONVOLUTIONS")
+        else:
+            tactic_sources.append("-JIT_CONVOLUTIONS")
+
+    args.append(f"--tacticSources={','.join(tactic_sources)}")
 
     if use_cuda_graph:
         args.extend((
@@ -1478,7 +1519,8 @@ def _inference(
             faster_dynamic_shapes=backend.faster_dynamic_shapes,
             force_fp16=backend.force_fp16,
             builder_optimization_level=backend.builder_optimization_level,
-            max_aux_streams=backend.max_aux_streams
+            max_aux_streams=backend.max_aux_streams,
+            short_path=backend.short_path
         )
         clip = core.trt.Model(
             clips, engine_path,
@@ -1605,7 +1647,7 @@ class BackendV2:
     def TRT(*,
         num_streams: int = 1,
         fp16: bool = False,
-        tf32: bool = True,
+        tf32: bool = False,
         output_format: int = 0, # 0: fp32, 1: fp16
         workspace: typing.Optional[int] = None,
         use_cuda_graph: bool = False,
@@ -1615,7 +1657,7 @@ class BackendV2:
         max_shapes: typing.Optional[typing.Tuple[int, int]] = None,
         force_fp16: bool = False,
         use_cublas: bool = False,
-        use_cudnn: bool = True,
+        use_cudnn: bool = False,
         device_id: int = 0,
         **kwargs
     ) -> Backend.TRT:
@@ -1707,11 +1749,11 @@ def fmtc_resample(clip: vs.VideoNode, **kwargs) -> vs.VideoNode:
 
     if clip.format.sample_type == vs.FLOAT and clip.format.bits_per_sample != 32:
         format = clip.format.replace(core=core, bits_per_sample=32)
-        clip = core.resize.Point(clip, format=format)
+        clip = core.resize.Point(clip, format=format.id)
 
     clip = core.fmtc.resample(clip, **kwargs)
 
     if clip.format.bits_per_sample != clip_org.format.bits_per_sample:
-        clip = core.resize.Point(clip, format=clip_org.format)
+        clip = core.resize.Point(clip, format=clip_org.format.id)
 
     return clip
