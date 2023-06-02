@@ -138,7 +138,7 @@ class Backend:
         force_fp16: bool = False
         builder_optimization_level: int = 3
         max_aux_streams: typing.Optional[int] = None
-        short_path: typing.Optional[bool] = None # True on Windows by default, False otherwise
+        short_path: typing.Optional[bool] = False # True on Windows by default, False otherwise
 
         # internal backend attributes
         supports_onnx_serialization: bool = False
