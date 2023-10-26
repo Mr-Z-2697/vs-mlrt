@@ -141,7 +141,7 @@ class Backend:
         short_path: typing.Optional[bool] = False # True on Windows by default, False otherwise
         bf16: bool = False
         custom_env: typing.Dict[str, str] = field(default_factory=lambda: {})
-        timing_cache: str = r"D:\vstrt.cache"
+        timing_cache: typing.Optional[typing.Union[str, bool]] = r"D:\vstrt.cache"
 
         # internal backend attributes
         supports_onnx_serialization: bool = False
@@ -1225,18 +1225,17 @@ def trtexec(
             os.makedirs(dirname)
         print(f"change engine path to {engine_path}", file=sys.stderr)
 
-    if timing_cache is not None:
-        timing_cache_path = timing_cache
-    else:
-        timing_cache_path = f"{network_path}.cache"
-
     args = [
         trtexec_path,
         f"--onnx={network_path}",
-        f"--timingCacheFile={timing_cache_path}",
         f"--device={device_id}",
         f"--saveEngine={engine_path}"
     ]
+
+    if isinstance(timing_cache, str):
+        args.append(f"--timingCacheFile={timing_cache}")
+    elif timing_cache is None or timing_cache is True:
+        args.append(f"--timingCacheFile={network_path}.cache")
 
     if workspace is not None:
         if trt_version >= 8400:
