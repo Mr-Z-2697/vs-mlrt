@@ -8,6 +8,7 @@ set(CUDNN_HOME "" CACHE PATH "Path to cuDNN")
 find_package(CUDAToolkit REQUIRED)
 
 add_executable(trtexec
+    $<$<PLATFORM_ID:Windows>: trtexec.manifest>
     trtexec.cpp
     logfile.cpp
     ../common/bfloat16.cpp

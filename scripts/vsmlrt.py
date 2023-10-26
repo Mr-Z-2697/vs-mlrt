@@ -114,16 +114,16 @@ class Backend:
         set use_cuda_graph = True
         """
 
-        max_shapes: typing.Optional[typing.Tuple[int, int]] = None
-        opt_shapes: typing.Optional[typing.Tuple[int, int]] = None
-        fp16: bool = False
+        max_shapes: typing.Optional[typing.Tuple[int, int]] = (1920,1080)
+        opt_shapes: typing.Optional[typing.Tuple[int, int]] = (512,512)
+        fp16: bool = True
         device_id: int = 0
-        workspace: typing.Optional[int] = None
+        workspace: typing.Optional[int] = 256
         verbose: bool = False
-        use_cuda_graph: bool = False
+        use_cuda_graph: bool = True
         num_streams: int = 1
         use_cublas: bool = False # cuBLAS + cuBLASLt
-        static_shape: bool = True
+        static_shape: bool = False
         tf32: bool = False
         log: bool = True
 
@@ -133,12 +133,12 @@ class Backend:
         use_jit_convolutions: bool = True
         heuristic: bool = False # only supported on Ampere+ with TensorRT 8.5+
         output_format: int = 0 # 0: fp32, 1: fp16
-        min_shapes: typing.Tuple[int, int] = (0, 0)
+        min_shapes: typing.Tuple[int, int] = (32,32)
         faster_dynamic_shapes: bool = True
         force_fp16: bool = False
         builder_optimization_level: int = 3
         max_aux_streams: typing.Optional[int] = None
-        short_path: typing.Optional[bool] = None # True on Windows by default, False otherwise
+        short_path: typing.Optional[bool] = False # True on Windows by default, False otherwise
         bf16: bool = False
         custom_env: typing.Dict[str, str] = field(default_factory=lambda: {})
 
@@ -229,7 +229,7 @@ def Waifu2x(
     tilesize: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     overlap: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     model: Waifu2xModel = Waifu2xModel.cunet,
-    backend: backendT = Backend.OV_CPU(),
+    backend: backendT = Backend.TRT(),
     preprocess: bool = True
 ) -> vs.VideoNode:
 
@@ -398,7 +398,7 @@ def DPIR(
     tilesize: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     overlap: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     model: DPIRModel = DPIRModel.drunet_gray,
-    backend: backendT = Backend.OV_CPU()
+    backend: backendT = Backend.TRT()
 ) -> vs.VideoNode:
 
     func_name = "vsmlrt.DPIR"
@@ -502,7 +502,7 @@ def RealESRGAN(
     tilesize: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     overlap: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     model: RealESRGANv2Model = RealESRGANv2Model.animevideo_xsx2,
-    backend: backendT = Backend.OV_CPU(),
+    backend: backendT = Backend.TRT(),
     scale: typing.Optional[float] = None
 ) -> vs.VideoNode:
 
@@ -593,7 +593,7 @@ def CUGAN(
     tiles: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     tilesize: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     overlap: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
-    backend: backendT = Backend.OV_CPU(),
+    backend: backendT = Backend.TRT(),
     alpha: float = 1.0,
     version: typing.Literal[1, 2] = 1, # 1: legacy, 2: pro
     conformance: bool = True # currently specifies dynamic range compression for cugan-pro
@@ -824,7 +824,7 @@ def RIFEMerge(
     tilesize: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     overlap: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     model: RIFEModel = RIFEModel.v4_4,
-    backend: backendT = Backend.OV_CPU(),
+    backend: backendT = Backend.TRT(),
     ensemble: bool = False,
     _implementation: typing.Optional[typing.Literal[1, 2]] = None
 ) -> vs.VideoNode:
@@ -986,7 +986,7 @@ def RIFE(
     tilesize: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     overlap: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
     model: RIFEModel = RIFEModel.v4_4,
-    backend: backendT = Backend.OV_CPU(),
+    backend: backendT = Backend.TRT(),
     ensemble: bool = False,
     _implementation: typing.Optional[typing.Literal[1, 2]] = None
 ) -> vs.VideoNode:
@@ -1226,7 +1226,7 @@ def trtexec(
     args = [
         trtexec_path,
         f"--onnx={network_path}",
-        f"--timingCacheFile={engine_path}.cache",
+        f"--timingCacheFile=D:\\vstrt.cache",
         f"--device={device_id}",
         f"--saveEngine={engine_path}"
     ]
@@ -1635,7 +1635,7 @@ def inference(
     network_path: str,
     overlap: typing.Tuple[int, int] = (0, 0),
     tilesize: typing.Optional[typing.Tuple[int, int]] = None,
-    backend: backendT = Backend.OV_CPU(),
+    backend: backendT = Backend.TRT(),
     input_name: typing.Optional[str] = "input"
 ) -> vs.VideoNode:
 
