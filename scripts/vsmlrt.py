@@ -141,6 +141,7 @@ class Backend:
         short_path: typing.Optional[bool] = False # True on Windows by default, False otherwise
         bf16: bool = False
         custom_env: typing.Dict[str, str] = field(default_factory=lambda: {})
+        timing_cache: str = r"D:\vstrt.cache"
 
         # internal backend attributes
         supports_onnx_serialization: bool = False
@@ -1162,7 +1163,8 @@ def trtexec(
     max_aux_streams: typing.Optional[int] = None,
     short_path: typing.Optional[bool] = None,
     bf16: bool = False,
-    custom_env: typing.Dict[str, str] = {}
+    custom_env: typing.Dict[str, str] = {},
+    timing_cache: str = None
 ) -> str:
 
     # tensort runtime version, e.g. 8401 => 8.4.1
@@ -1223,10 +1225,15 @@ def trtexec(
             os.makedirs(dirname)
         print(f"change engine path to {engine_path}", file=sys.stderr)
 
+    if timing_cache is not None:
+        timing_cache_path = timing_cache
+    else:
+        timing_cache_path = f"{network_path}.cache"
+
     args = [
         trtexec_path,
         f"--onnx={network_path}",
-        f"--timingCacheFile=D:\\vstrt.cache",
+        f"--timingCacheFile={timing_cache_path}",
         f"--device={device_id}",
         f"--saveEngine={engine_path}"
     ]
@@ -1568,7 +1575,8 @@ def _inference(
             max_aux_streams=backend.max_aux_streams,
             short_path=backend.short_path,
             bf16=backend.bf16,
-            custom_env=backend.custom_env
+            custom_env=backend.custom_env,
+            timing_cache=backend.timing_cache
         )
         clip = core.trt.Model(
             clips, engine_path,
