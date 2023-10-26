@@ -1127,11 +1127,11 @@ def get_engine_path(
         f"_{checksum:x}"
     )
 
-    if short_path or (short_path is None and platform.system() == "Windows"):
-        dirname, basename = os.path.split(network_path)
-        return os.path.join(dirname, f"{zlib.crc32((basename + identity).encode()):x}.engine")
-    else:
-        return f"{network_path}.{identity}.engine"
+    dirname, basename = os.path.split(network_path)
+    return (
+        f"{network_path}.{identity}.engine",
+        os.path.join(dirname, f"{zlib.crc32((basename + identity).encode()):x}.engine")
+        )
 
 
 def trtexec(
@@ -1180,7 +1180,7 @@ def trtexec(
         tf32 = False
         bf16 = False
 
-    engine_path = get_engine_path(
+    engine_paths = get_engine_path(
         network_path=network_path,
         min_shapes=min_shapes,
         opt_shapes=opt_shapes,
@@ -1199,6 +1199,12 @@ def trtexec(
         short_path=short_path,
         bf16=bf16,
     )
+
+    if short_path or (short_path is None and platform.system() == "Windows"):
+        short_path = True
+        engine_path = engine_paths[1]
+    else:
+        engine_path = engine_paths[0]
 
     if os.access(engine_path, mode=os.R_OK):
         return engine_path
@@ -1223,6 +1229,9 @@ def trtexec(
         if not os.path.exists(dirname):
             os.makedirs(dirname)
         print(f"change engine path to {engine_path}", file=sys.stderr)
+
+    if len(engine_path) > 255 and platform.system() == "Windows":
+        raise ValueError("Engine path will exceed windows limit, try use short_path.")
 
     args = [
         trtexec_path,
@@ -1375,6 +1384,10 @@ def trtexec(
         env = {"CUDA_MODULE_LOADING": "LAZY"}
         env.update(**custom_env)
         subprocess.run(args, env=custom_env, check=True, stdout=sys.stderr)
+
+    if short_path:
+        with open(engine_path[:-7]+".txt", "w") as desc:
+            desc.write(os.path.split(engine_paths[0])[-1])
 
     return engine_path
 
