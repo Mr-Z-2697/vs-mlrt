@@ -1,4 +1,4 @@
-__version__ = "3.17.8"
+__version__ = "3.18.1"
 
 __all__ = [
     "Backend", "BackendV2",
@@ -12,7 +12,7 @@ __all__ = [
 ]
 
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import enum
 import math
 import os
@@ -139,6 +139,8 @@ class Backend:
         builder_optimization_level: int = 3
         max_aux_streams: typing.Optional[int] = None
         short_path: typing.Optional[bool] = False # True on Windows by default, False otherwise
+        bf16: bool = False
+        custom_env: typing.Dict[str, str] = field(default_factory=lambda: {})
 
         # internal backend attributes
         supports_onnx_serialization: bool = False
@@ -1083,7 +1085,8 @@ def get_engine_path(
     output_format: int,
     builder_optimization_level: int,
     max_aux_streams: typing.Optional[int],
-    short_path: typing.Optional[bool]
+    short_path: typing.Optional[bool],
+    bf16: bool
 ) -> str:
 
     with open(network_path, "rb") as file:
@@ -1110,6 +1113,7 @@ def get_engine_path(
         shape_str +
         ("_fp16" if fp16 else "") +
         ("_tf32" if tf32 else "") +
+        ("_bf16" if bf16 else "") +
         (f"_workspace{workspace}" if workspace is not None else "") +
         f"_opt{builder_optimization_level}" +
         (f"_max-aux-streams{max_aux_streams}" if max_aux_streams is not None else "") +
@@ -1155,7 +1159,9 @@ def trtexec(
     force_fp16: bool = False,
     builder_optimization_level: int = 3,
     max_aux_streams: typing.Optional[int] = None,
-    short_path: typing.Optional[bool] = None
+    short_path: typing.Optional[bool] = None,
+    bf16: bool = False,
+    custom_env: typing.Dict[str, str] = {}
 ) -> str:
 
     # tensort runtime version, e.g. 8401 => 8.4.1
@@ -1170,6 +1176,7 @@ def trtexec(
     if force_fp16:
         fp16 = True
         tf32 = False
+        bf16 = False
 
     engine_path = get_engine_path(
         network_path=network_path,
@@ -1187,7 +1194,8 @@ def trtexec(
         output_format=output_format,
         builder_optimization_level=builder_optimization_level,
         max_aux_streams=max_aux_streams,
-        short_path=short_path
+        short_path=short_path,
+        bf16=bf16,
     )
 
     if os.access(engine_path, mode=os.R_OK):
@@ -1320,13 +1328,18 @@ def trtexec(
         if max_aux_streams is not None:
             args.append(f"--maxAuxStreams={max_aux_streams}")
 
+    if trt_version >= 9000:
+        if bf16:
+            args.append("--bf16")
+
     if log:
         env_key = "TRTEXEC_LOG_FILE"
         prev_env_value = os.environ.get(env_key)
 
         if prev_env_value is not None and len(prev_env_value) > 0:
             # env_key has been set, no extra action
-            env = {env_key: prev_env_value, 'CUDA_MODULE_LOADING': 'LAZY'}
+            env = {env_key: prev_env_value, "CUDA_MODULE_LOADING": "LAZY"}
+            env.update(**custom_env)
             subprocess.run(args, env=env, check=True, stdout=sys.stderr)
         else:
             time_str = time.strftime('%y%m%d_%H%M%S', time.localtime())
@@ -1336,7 +1349,8 @@ def trtexec(
                 f"trtexec_{time_str}.log"
             )
 
-            env = {env_key: log_filename, 'CUDA_MODULE_LOADING': 'LAZY'}
+            env = {env_key: log_filename, "CUDA_MODULE_LOADING": "LAZY"}
+            env.update(**custom_env)
 
             completed_process = subprocess.run(args, env=env, check=False, stdout=sys.stderr)
 
@@ -1352,8 +1366,9 @@ def trtexec(
                 else:
                     raise RuntimeError(f"trtexec execution fails but no log is found")
     else:
-        env = {'CUDA_MODULE_LOADING': 'LAZY'}
-        subprocess.run(args, check=True, stdout=sys.stderr, env=env)
+        env = {"CUDA_MODULE_LOADING": "LAZY"}
+        env.update(**custom_env)
+        subprocess.run(args, env=custom_env, check=True, stdout=sys.stderr)
 
     return engine_path
 
@@ -1550,7 +1565,9 @@ def _inference(
             force_fp16=backend.force_fp16,
             builder_optimization_level=backend.builder_optimization_level,
             max_aux_streams=backend.max_aux_streams,
-            short_path=backend.short_path
+            short_path=backend.short_path,
+            bf16=backend.bf16,
+            custom_env=backend.custom_env
         )
         clip = core.trt.Model(
             clips, engine_path,
