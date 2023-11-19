@@ -1,4 +1,4 @@
-__version__ = "3.18.6"
+__version__ = "3.18.10"
 
 __all__ = [
     "Backend", "BackendV2",
@@ -807,6 +807,10 @@ def get_rife_input(clip: vs.VideoNode) -> typing.List[vs.VideoNode]:
 
 @enum.unique
 class RIFEModel(enum.IntEnum):
+    """
+    Starting from RIFE v4.12 lite, this interface does not provide forward compatiblity in enum values.
+    """
+
     v4_0 = 40
     v4_2 = 42
     v4_3 = 43
@@ -817,6 +821,9 @@ class RIFEModel(enum.IntEnum):
     v4_8 = 48
     v4_9 = 49
     v4_10 = 410
+    v4_11 = 411
+    v4_12 = 412
+    v4_12_lite = 4121
 
 
 def RIFEMerge(
@@ -880,15 +887,17 @@ def RIFEMerge(
     scale = float(Fraction(scale))
 
     model_major = int(str(int(model))[0])
-    model_minor = int(str(int(model))[1:])
+    model_minor = int(str(int(model))[1:3])
+    lite = "_lite" if len(str(int(model))) >= 4 else ""
+    version = f"v{model_major}.{model_minor}{lite}{'_ensemble' if ensemble else ''}"
 
-    if (model_major, model_minor) >= (4, 7) and (ensemble or scale != 1.0):
+    if (model_major, model_minor) >= (4, 7) and scale != 1.0:
         raise ValueError("not supported")
 
     network_path = os.path.join(
         models_path,
         "rife_v2",
-        f"rife_v{model_major}.{model_minor}{'_ensemble' if ensemble else ''}.onnx"
+        f"rife_{version}.onnx"
     )
     if _implementation == 2 and os.path.exists(network_path) and scale == 1.0:
         implementation_version = 2
@@ -900,7 +909,7 @@ def RIFEMerge(
         network_path = os.path.join(
             models_path,
             "rife",
-            f"rife_v{model_major}.{model_minor}{'_ensemble' if ensemble else ''}.onnx"
+            f"rife_{version}.onnx"
         )
 
         clips = [clipa, clipb, mask, *get_rife_input(clipa)]
@@ -925,7 +934,7 @@ def RIFEMerge(
     if implementation_version == 2:
         if isinstance(backend, Backend.TRT):
             # https://github.com/AmusementClub/vs-mlrt/issues/66#issuecomment-1791986979
-            if (4, 0) <= (model_major, model_minor) <= (4, 10):
+            if (4, 0) <= (model_major, model_minor):
                 backend.custom_args.extend([
                     "--precisionConstraints=obey", 
                     "--layerPrecisions=" + (
