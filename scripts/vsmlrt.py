@@ -1593,8 +1593,8 @@ def _inference(
 
         channels = sum(clip.format.num_planes for clip in clips)
 
-        opt_shapes = backend.opt_shapes if backend.opt_shapes is not None else tilesize
-        max_shapes = backend.max_shapes if backend.max_shapes is not None else tilesize
+        opt_shapes = backend.opt_shapes if backend.opt_shapes is not None and not backend.static_shape else tilesize
+        max_shapes = backend.max_shapes if backend.max_shapes is not None and not backend.static_shape else tilesize
 
         engine_path = trtexec(
             network_path,
