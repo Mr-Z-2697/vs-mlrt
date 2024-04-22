@@ -39,7 +39,7 @@ jobs:
 
     steps:
     - name: Checkout repo
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
@@ -48,13 +48,13 @@ jobs:
 
     - name: Cache protobuf
       id: cache-protobuf
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: vsncnn/protobuf/install
         key: ${{ runner.os }}-vsncnn-protobuf-v3.16.0
 
     - name: Checkout protobuf
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       if: steps.cache-protobuf.outputs.cache-hit != 'true'
       with:
         repository: protocolbuffers/protobuf
@@ -81,14 +81,14 @@ jobs:
 
     - name: Cache onnx
       id: cache-onnx
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: vsncnn/onnx/install
         key: ${{ runner.os }}-vsncnn-onnx-v1.12.0-protobuf-v3.16.0
 
     - name: Checkout onnx
       if: steps.cache-onnx.outputs.cache-hit != 'true'
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         repository: onnx/onnx
         ref: v1.12.0
@@ -135,8 +135,8 @@ jobs:
     - name: Setup Vulkan SDK
       shell: pwsh
       run: |
-        Invoke-WebRequest -Uri https://sdk.lunarg.com/sdk/download/1.2.189.0/windows/VulkanSDK-1.2.189.0-Installer.exe?Human=true -OutFile VulkanSDK.exe
-        $installer = Start-Process -FilePath VulkanSDK.exe -Wait -PassThru -ArgumentList @("/S");
+        Invoke-WebRequest -Uri https://sdk.lunarg.com/sdk/download/1.3.275.0/windows/VulkanSDK-1.3.275.0-Installer.exe?Human=true -OutFile VulkanSDK.exe
+        $installer = Start-Process -FilePath VulkanSDK.exe -Wait -PassThru -ArgumentList "--accept-licenses --default-answer --confirm-command install";
         $installer.WaitForExit();
 
     - name: Configure
@@ -149,7 +149,7 @@ jobs:
         -D ncnn_DIR=ncnn\lib\cmake\ncnn
         -D CMAKE_CXX_STANDARD=20
       env:
-        VULKAN_SDK: C:\VulkanSDK\1.2.189.0
+        VULKAN_SDK: C:\VulkanSDK\1.3.275.0
 
     - name: Build
       run: cmake --build build --verbose
@@ -161,7 +161,7 @@ jobs:
         copy install\bin\vsncnn.dll artifact\
 
     - name: Upload
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: VSNCNN-GPU-Windows-x64
         path: vsncnn/artifact

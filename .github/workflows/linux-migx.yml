@@ -1,10 +1,10 @@
-name: Build (Linux-TRT)
+name: Build (Linux-MIGX)
 
 on:
   push:
     paths:
-      - 'vstrt/**'
-      - '.github/workflows/linux-trt.yml'
+      - 'vsmigx/**'
+      - '.github/workflows/linux-migx.yml'
   workflow_dispatch:
 
 jobs:
@@ -13,7 +13,7 @@ jobs:
     
     defaults:
       run:
-        working-directory: vstrt
+        working-directory: vsmigx
 
     steps:
     - name: Checkout repo
@@ -30,15 +30,13 @@ jobs:
         unzip -q vs.zip
         mv vapoursynth*/ vapoursynth
 
-    - name: Setup CUDA and TensorRT
+    - name: Setup HIP and MIGraphX
       run: |
-        wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
-        sudo dpkg -i cuda-keyring_1.1-1_all.deb
-        sudo apt-get update
-        sudo apt-get install -y cuda-nvcc-12-4 cuda-cudart-dev-12-4 libnvinfer-dev=10.0.0.6-1+cuda12.4 libnvinfer-headers-dev=10.0.0.6-1+cuda12.4
-        echo "PATH=/usr/local/cuda/bin${PATH:+:${PATH}}" >> $GITHUB_ENV
-        echo "CUDA_PATH=/usr/local/cuda" >> $GITHUB_ENV
-        echo "LD_LIBRARY_PATH=/usr/local/cuda/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" >> $GITHUB_ENV
+        wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
+        echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.0.2 jammy main" | sudo tee --append /etc/apt/sources.list.d/rocm.list
+        echo -e 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' | sudo tee /etc/apt/preferences.d/rocm-pin-600
+        sudo apt update
+        sudo apt install hip-runtime-amd rocm-device-libs migraphx-dev
 
     - name: Configure
       run: cmake -S . -B build -G Ninja -LA
@@ -46,6 +44,13 @@ jobs:
         -D VAPOURSYNTH_INCLUDE_DIRECTORY="`pwd`/vapoursynth/include"
         -D CMAKE_CXX_COMPILER=g++-12
         -D CMAKE_CXX_FLAGS="-Wall -ffast-math -march=x86-64-v3"
+        -D migraphx_DIR=/opt/rocm/lib/cmake/migraphx
+        -D MIOpen_DIR=/opt/rocm/lib/cmake/miopen
+        -D hip_DIR=/opt/rocm/lib/cmake/hip
+        -D AMDDeviceLibs_DIR=/opt/rocm/lib/cmake/AMDDeviceLibs
+        -D amd_comgr_DIR=/opt/rocm/lib/cmake/amd_comgr
+        -D hsa-runtime64_DIR=/opt/rocm/lib/cmake/hsa-runtime64
+        -D rocblas_DIR=/opt/rocm/lib/cmake/rocblas
 
     - name: Build
       run: cmake --build build --verbose
@@ -64,7 +69,7 @@ jobs:
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: VSTRT-Linux-x64
-        path: vstrt/artifact
+        name: VSMIGX-Linux-x64
+        path: vsmigx/artifact
         overwrite: true
 

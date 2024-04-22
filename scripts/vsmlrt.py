@@ -1,4 +1,4 @@
-__version__ = "3.18.22"
+__version__ = "3.20.9"
 
 __all__ = [
     "Backend", "BackendV2",
@@ -9,6 +9,7 @@ __all__ = [
     "CUGAN",
     "RIFE", "RIFEModel", "RIFEMerge",
     "SAFA", "SAFAModel", "SAFAAdaptiveMode",
+    "SCUNet", "SCUNetModel",
     "inference"
 ]
 
@@ -35,15 +36,18 @@ def get_plugins_path() -> str:
     path = b""
 
     try:
-        path = core.trt.Version()["path"]
+        path = core.ov.Version()["path"]
     except AttributeError:
         try:
             path = core.ort.Version()["path"]
         except AttributeError:
             try:
-                path = core.ov.Version()["path"]
-            except AttributeError:
                 path = core.ncnn.Version()["path"]
+            except AttributeError:
+                try:
+                    path = core.trt.Version()["path"]
+                except AttributeError:
+                    path = core.migx.Version()["path"]
 
     assert path != b""
 
@@ -51,6 +55,7 @@ def get_plugins_path() -> str:
 
 plugins_path: str = get_plugins_path()
 trtexec_path: str = os.path.join(plugins_path, "vsmlrt-cuda", "trtexec")
+migraphx_driver_path: str = os.path.join(plugins_path, "vsmlrt-hip", "migraphx-driver")
 models_path: str = os.path.join(plugins_path, "models")
 
 
@@ -73,6 +78,18 @@ class Backend:
 
         basic performance tuning:
         set fp16 = True (on RTX GPUs)
+
+        Semantics of `fp16`:
+            Enabling `fp16` will use a built-in quantization that converts a fp32 onnx to a fp16 onnx.
+            If the input video is of half-precision floating-point format,
+            the generated fp16 onnx will use fp16 input.
+            The output format can be controlled by the `output_format` option (0 = fp32, 1 = fp16).
+
+            Disabling `fp16` will not use the built-in quantization.
+            However, if the onnx file itself uses fp16 for computation,
+            the actual computation will be done in fp16.
+            In this case, the input video format should match the input format of the onnx,
+            and the output format is inferred from the onnx.
         """
 
         device_id: int = 0
@@ -82,6 +99,9 @@ class Backend:
         fp16: bool = False
         use_cuda_graph: bool = False # preview, not supported by all models
         fp16_blacklist_ops: typing.Optional[typing.Sequence[str]] = None
+        prefer_nhwc: bool = False
+        output_format: int = 0 # 0: fp32, 1: fp16
+        tf32: bool = False
 
         # internal backend attributes
         supports_onnx_serialization: bool = True
@@ -195,6 +215,35 @@ class Backend:
         # internal backend attributes
         supports_onnx_serialization: bool = True
 
+    @dataclass(frozen=False)
+    class MIGX:
+        """ backend for amd gpus
+
+        basic performance tuning:
+        set fp16 = True
+        """
+
+        device_id: int = 0
+        fp16: bool = False
+        opt_shapes: typing.Optional[typing.Tuple[int, int]] = None
+        fast_math: bool = True
+        exhaustive_tune: bool = False
+
+        short_path: typing.Optional[bool] = None # True on Windows by default, False otherwise
+        custom_env: typing.Dict[str, str] = field(default_factory=lambda: {})
+        custom_args: typing.List[str] = field(default_factory=lambda: [])
+
+        # internal backend attributes
+        supports_onnx_serialization: bool = False
+
+    @dataclass(frozen=False)
+    class OV_NPU:
+        """ backend for intel npus
+        """
+
+        # internal backend attributes
+        supports_onnx_serialization: bool = True
+
 
 backendT = typing.Union[
     Backend.OV_CPU,
@@ -204,6 +253,8 @@ backendT = typing.Union[
     Backend.OV_GPU,
     Backend.NCNN_VK,
     Backend.ORT_DML,
+    Backend.MIGX,
+    Backend.OV_NPU,
 ]
 
 
@@ -496,6 +547,10 @@ class RealESRGANModel(enum.IntEnum):
     animejanaiV2L1 = 5005
     animejanaiV2L2 = 5006
     animejanaiV2L3 = 5007
+    # contributed: janaiV3-hd(2x) https://github.com/the-database/mpv-upscale-2x_animejanai/releases/tag/3.0.0 maintainer: hooke007
+    animejanaiV3_HD_L1 = 5008
+    animejanaiV3_HD_L2 = 5009
+    animejanaiV3_HD_L3 = 5010
 
 RealESRGANv2Model = RealESRGANModel
 
@@ -557,7 +612,7 @@ def RealESRGAN(
             "RealESRGANv2",
             "realesr-animevideov3.onnx"
         )
-    elif model in [5005, 5006, 5007]:
+    elif model in [5005, 5006, 5007, 5008, 5009, 5010]:
         network_path = os.path.join(
             models_path,
             "RealESRGANv2",
@@ -830,6 +885,9 @@ class RIFEModel(enum.IntEnum):
     v4_13_lite = 4131
     v4_14 = 414
     v4_14_lite = 4141
+    v4_15 = 415
+    v4_15_lite = 4151
+    v4_16_lite = 4161
 
 
 def RIFEMerge(
@@ -1361,6 +1419,88 @@ def SAFA(
     return clip
 
 
+@enum.unique
+class SCUNetModel(enum.IntEnum):
+    scunet_color_15 = 0
+    scunet_color_25 = 1
+    scunet_color_50 = 2
+    scunet_color_real_psnr = 3
+    scunet_color_real_gan = 4
+    scunet_gray_15 = 5
+    scunet_gray_25 = 6
+    scunet_gray_50 = 7
+
+
+def SCUNet(
+    clip: vs.VideoNode,
+    tiles: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
+    tilesize: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
+    overlap: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
+    model: SCUNetModel = SCUNetModel.scunet_color_real_psnr,
+    backend: backendT = Backend.OV_CPU()
+) -> vs.VideoNode:
+    """ Practical Blind Denoising via Swin-Conv-UNet and Data Synthesis
+
+    Unlike vs-scunet v1.0.0, the default model is set to scunet_color_real_psnr due to the color shift.
+    """
+
+    func_name = "vsmlrt.SCUNet"
+
+    if not isinstance(clip, vs.VideoNode):
+        raise TypeError(f'{func_name}: "clip" must be a clip!')
+
+    if clip.format.sample_type != vs.FLOAT or clip.format.bits_per_sample not in [16, 32]:
+        raise ValueError(f"{func_name}: only constant format 16/32 bit float input supported")
+
+    if not isinstance(model, int) or model not in SCUNetModel.__members__.values():
+        raise ValueError(f'{func_name}: invalid "model"')
+
+    if model in range(5) and clip.format.color_family != vs.RGB:
+        raise ValueError(f'{func_name}: "clip" must be of RGB color family')
+    elif model in range(5, 8) and clip.format.color_family != vs.GRAY:
+        raise ValueError(f'{func_name}: "clip" must be of GRAY color family')
+
+    if overlap is None:
+        overlap_w = overlap_h = 16
+    elif isinstance(overlap, int):
+        overlap_w = overlap_h = overlap
+    else:
+        overlap_w, overlap_h = overlap
+
+    multiple = 1
+
+    (tile_w, tile_h), (overlap_w, overlap_h) = calc_tilesize(
+        tiles=tiles, tilesize=tilesize,
+        width=clip.width, height=clip.height,
+        multiple=multiple,
+        overlap_w=overlap_w, overlap_h=overlap_h
+    )
+
+    if tile_w % multiple != 0 or tile_h % multiple != 0:
+        raise ValueError(
+            f'{func_name}: tile size must be divisible by {multiple} ({tile_w}, {tile_h})'
+        )
+
+    backend = init_backend(
+        backend=backend,
+        trt_opt_shapes=(tile_w, tile_h)
+    )
+
+    network_path = os.path.join(
+        models_path,
+        "scunet",
+        f"{tuple(SCUNetModel.__members__)[model]}.onnx"
+    )
+
+    clip = inference_with_fallback(
+        clips=[clip], network_path=network_path,
+        overlap=(overlap_w, overlap_h), tilesize=(tile_w, tile_h),
+        backend=backend
+    )
+
+    return clip
+
+
 def get_engine_path(
     network_path: str,
     min_shapes: typing.Tuple[int, int],
@@ -1458,8 +1598,8 @@ def trtexec(
     custom_args: typing.List[str] = []
 ) -> str:
 
-    # tensort runtime version, e.g. 8401 => 8.4.1
-    trt_version = int(core.trt.Version()["tensorrt_version"])
+    # tensort runtime version
+    trt_version = parse_trt_version(int(core.trt.Version()["tensorrt_version"]))
 
     if isinstance(opt_shapes, int):
         opt_shapes = (opt_shapes, opt_shapes)
@@ -1538,7 +1678,7 @@ def trtexec(
         args.append(f"--timingCacheFile={network_path}.cache")
 
     if workspace is not None:
-        if trt_version >= 8400:
+        if trt_version >= (8, 4, 0):
             args.append(f"--memPoolSize=workspace:{workspace}")
         else:
             args.append(f"--workspace{workspace}")
@@ -1559,10 +1699,10 @@ def trtexec(
         args.append("--verbose")
 
     preview_features = []
-    if (use_cublas or use_cudnn) and trt_version >= 8600:
+    if (use_cublas or use_cudnn) and (8, 6, 0) <= trt_version < (10, 0, 0):
         preview_features.append("-disableExternalTacticSourcesForCore0805")
 
-    if preview_features and trt_version >= 8500:
+    if preview_features and trt_version >= (8, 5, 0):
         args.append(f"--preview={','.join(preview_features)}")
 
     tactic_sources = []
@@ -1577,13 +1717,13 @@ def trtexec(
     else:
         tactic_sources.append("-CUDNN")
 
-    if trt_version >= 8401:
+    if trt_version >= (8, 4, 1):
         if use_edge_mask_convolutions:
             tactic_sources.append("+EDGE_MASK_CONVOLUTIONS")
         else:
             tactic_sources.append("-EDGE_MASK_CONVOLUTIONS")
 
-    if trt_version >= 8500:
+    if trt_version >= (8, 5, 0):
         if use_jit_convolutions:
             tactic_sources.append("+JIT_CONVOLUTIONS")
         else:
@@ -1600,13 +1740,16 @@ def trtexec(
     if trt_version >= 8600:
         args.append("--skipInference")
     else:
-        args.append("--buildOnly")
+        if trt_version >= (8, 6, 0):
+            args.append("--skipInference")
+        else:
+            args.append("--buildOnly")
 
     if not tf32:
         args.append("--noTF32")
 
-    if heuristic and trt_version >= 8500 and core.trt.DeviceProperties(device_id)["major"] >= 8:
-        if trt_version < 8600:
+    if heuristic and trt_version >= (8, 5, 0) and core.trt.DeviceProperties(device_id)["major"] >= 8:
+        if trt_version < (8, 6, 0):
             args.append("--heuristic")
         else:
             builder_optimization_level = 2
@@ -1616,11 +1759,11 @@ def trtexec(
         "--outputIOFormats=fp32:chw" if output_format == 0 else "--outputIOFormats=fp16:chw"
     ])
 
-    if faster_dynamic_shapes and not static_shape and 8500 <= trt_version < 8600:
+    if faster_dynamic_shapes and not static_shape and (8, 5, 0) <= trt_version < (8, 6, 0):
         args.append("--preview=+fasterDynamicShapes0805")
 
     if force_fp16:
-        if trt_version >= 8401:
+        if trt_version >= (8, 4, 1):
             args.extend([
                 "--layerPrecisions=*:fp16",
                 "--layerOutputTypes=*:fp16",
@@ -1629,13 +1772,13 @@ def trtexec(
         else:
             raise ValueError('"force_fp16" is not available')
 
-    if trt_version >= 8600:
+    if trt_version >= (8, 6, 0):
         args.append(f"--builderOptimizationLevel={builder_optimization_level}")
 
         if max_aux_streams is not None:
             args.append(f"--maxAuxStreams={max_aux_streams}")
 
-    if trt_version >= 9000:
+    if trt_version >= (9, 0, 0):
         if bf16:
             args.append("--bf16")
 
@@ -1677,13 +1820,136 @@ def trtexec(
     else:
         env = {"CUDA_MODULE_LOADING": "LAZY"}
         env.update(**custom_env)
-        subprocess.run(args, env=custom_env, check=True, stdout=sys.stderr)
+        subprocess.run(args, env=env, check=True, stdout=sys.stderr)
 
     if short_path:
         with open(engine_path[:-7]+".txt", "w") as desc:
             desc.write(os.path.split(engine_paths[0])[-1])
 
     return engine_path
+
+
+def get_mxr_path(
+    network_path: str,
+    opt_shapes: typing.Tuple[int, int],
+    fp16: bool,
+    fast_math: bool,
+    exhaustive_tune: bool,
+    device_id: int,
+    short_path: typing.Optional[bool]
+) -> str:
+
+    with open(network_path, "rb") as file:
+        checksum = zlib.adler32(file.read())
+
+    migx_version = core.migx.Version()["migraphx_version_build"].decode()
+
+    try:
+        device_name = core.migx.DeviceProperties(device_id)["name"].decode()
+        device_name = device_name.replace(' ', '-')
+    except AttributeError:
+        device_name = f"device{device_id}"
+
+    shape_str = f"{opt_shapes[0]}x{opt_shapes[1]}"
+
+    identity = (
+        shape_str +
+        ("_fp16" if fp16 else "") +
+        ("_fast" if fast_math else "") +
+        ("_exhaustive" if exhaustive_tune else "") +
+        f"_migx-{migx_version}" +
+        f"_{device_name}" +
+        f"_{checksum:x}"
+    )
+
+    if short_path or (short_path is None and platform.system() == "Windows"):
+        dirname, basename = os.path.split(network_path)
+        return os.path.join(dirname, f"{zlib.crc32((basename + identity).encode()):x}.mxr")
+    else:
+        return f"{network_path}.{identity}.mxr"
+
+
+def migraphx_driver(
+    network_path: str,
+    channels: int,
+    opt_shapes: typing.Tuple[int, int],
+    fp16: bool,
+    fast_math: bool,
+    exhaustive_tune: bool,
+    device_id: int,
+    input_name: str = "input",
+    short_path: typing.Optional[bool] = None,
+    custom_env: typing.Dict[str, str] = {},
+    custom_args: typing.List[str] = []
+) -> str:
+
+    if isinstance(opt_shapes, int):
+        opt_shapes = (opt_shapes, opt_shapes)
+
+    mxr_path = get_mxr_path(
+        network_path=network_path,
+        opt_shapes=opt_shapes,
+        fp16=fp16,
+        fast_math=fast_math,
+        exhaustive_tune=exhaustive_tune,
+        device_id=device_id,
+        short_path=short_path
+    )
+
+    if os.access(mxr_path, mode=os.R_OK):
+        return mxr_path
+
+    alter_mxr_path = os.path.join(
+        tempfile.gettempdir(),
+        os.path.splitdrive(mxr_path)[1][1:]
+    )
+
+    if os.access(alter_mxr_path, mode=os.R_OK):
+        return alter_mxr_path
+
+    try:
+        # test writability
+        with open(mxr_path, "w") as f:
+            pass
+        os.remove(mxr_path)
+    except PermissionError:
+        print(f"{mxr_path} not writable", file=sys.stderr)
+        mxr_path = alter_mxr_path
+        dirname = os.path.dirname(mxr_path)
+        if not os.path.exists(dirname):
+            os.makedirs(dirname)
+        print(f"change mxr path to {mxr_path}", file=sys.stderr)
+
+    if device_id != 0:
+        raise ValueError('"device_id" must be 0')
+
+    args = [
+        migraphx_driver_path,
+        "compile",
+        "--onnx", f"{network_path}",
+        "--gpu",
+        # f"--device={device_id}",
+        "--optimize",
+        "--binary",
+        "--output", f"{mxr_path}"
+    ]
+
+    args.extend(["--input-dim", f"@{input_name}", "1", f"{channels}", f"{opt_shapes[1]}", f"{opt_shapes[0]}"])
+
+    if fp16:
+        args.append("--fp16")
+
+    if not fast_math:
+        args.append("--disable-fast-math")
+
+    if exhaustive_tune:
+        args.append("--exhaustive-tune")
+
+    args.extend(custom_args)
+
+    subprocess.run(args, env=custom_env, check=True, stdout=sys.stderr)
+
+    return mxr_path
 
 
 def calc_size(width: int, tiles: int, overlap: int, multiple: int = 1) -> int:
@@ -1740,6 +2006,10 @@ def init_backend(
         backend = Backend.NCNN_VK()
     elif backend is Backend.ORT_DML: # type: ignore
         backend = Backend.ORT_DML()
+    elif backend is Backend.MIGX: # type: ignore
+        backend = Backend.MIGX()
+    elif backend is Backend.OV_NPU:
+        backend = Backend.OV_NPU()
 
     backend = copy.deepcopy(backend)
 
@@ -1749,6 +2019,9 @@ def init_backend(
 
         if backend.max_shapes is None:
             backend.max_shapes = backend.opt_shapes
+    elif isinstance(backend, Backend.MIGX):
+        if backend.opt_shapes is None:
+            backend.opt_shapes = trt_opt_shapes
 
     return backend
 
@@ -1798,6 +2071,19 @@ def _inference(
             fp16_blacklist_ops=backend.fp16_blacklist_ops
         )
     elif isinstance(backend, Backend.ORT_CUDA):
+        kwargs = dict()
+
+        version_list = core.ort.Version().get("onnxruntime_version", b"0.0.0").split(b'.')
+        if len(version_list) != 3:
+            version = (0, 0, 0)
+        else:
+            version = tuple(map(int, version_list))
+
+        if version >= (1, 18, 0):
+            kwargs["prefer_nhwc"] = backend.prefer_nhwc
+            kwargs["output_format"] = backend.output_format
+            kwargs["tf32"] = backend.tf32
+
         clip = core.ort.Model(
             clips, network_path,
             overlap=overlap, tilesize=tilesize,
@@ -1809,34 +2095,66 @@ def _inference(
             fp16=backend.fp16,
             path_is_serialization=path_is_serialization,
             use_cuda_graph=backend.use_cuda_graph,
-            fp16_blacklist_ops=backend.fp16_blacklist_ops
+            fp16_blacklist_ops=backend.fp16_blacklist_ops,
+            **kwargs
         )
     elif isinstance(backend, Backend.OV_CPU):
-        config = lambda: dict(
-            CPU_THROUGHPUT_STREAMS=backend.num_streams,
-            CPU_BIND_THREAD="YES" if backend.bind_thread else "NO",
-            CPU_THREADS_NUM=backend.num_threads,
-            ENFORCE_BF16="YES" if backend.bf16 else "NO"
-        )
+        version = tuple(map(int, core.ov.Version().get("openvino_version", b"0.0.0").split(b'-')[0].split(b'.')))
+
+        if version >= (2024, 0, 0):
+            config_dict = dict(
+                NUM_STREAMS=backend.num_streams,
+                INFERENCE_NUM_THREADS=backend.num_threads,
+                ENABLE_CPU_PINNING="YES" if backend.bind_thread else "NO"
+            )
+            if backend.fp16:
+                config_dict["INFERENCE_PRECISION_HINT"] = "f16"
+            elif backend.bf16:
+                config_dict["INFERENCE_PRECISION_HINT"] = "bf16"
+            else:
+                config_dict["INFERENCE_PRECISION_HINT"] = "f32"
+
+            config = lambda: config_dict
+        else:
+            config = lambda: dict(
+                CPU_THROUGHPUT_STREAMS=backend.num_streams,
+                CPU_BIND_THREAD="YES" if backend.bind_thread else "NO",
+                CPU_THREADS_NUM=backend.num_threads,
+                ENFORCE_BF16="YES" if backend.bf16 else "NO"
+            )
 
         clip = core.ov.Model(
             clips, network_path,
             overlap=overlap, tilesize=tilesize,
             device="CPU", builtin=False,
-            fp16=backend.fp16,
+            fp16=False, # use ov's internal quantization
             config=config,
             path_is_serialization=path_is_serialization,
-            fp16_blacklist_ops=backend.fp16_blacklist_ops
+            fp16_blacklist_ops=backend.fp16_blacklist_ops # disabled since fp16 = False
         )
     elif isinstance(backend, Backend.OV_GPU):
-        config = lambda: dict(
-            GPU_THROUGHPUT_STREAMS=backend.num_streams
-        )
+        version = tuple(map(int, core.ov.Version().get("openvino_version", b"0.0.0").split(b'-')[0].split(b'.')))
+
+        if version >= (2024, 0, 0):
+            config_dict = dict(
+                NUM_STREAMS=backend.num_streams,
+            )
+            if backend.fp16:
+                config_dict["INFERENCE_PRECISION_HINT"] = "f16"
+            else:
+                config_dict["INFERENCE_PRECISION_HINT"] = "f32"
+
+            config = lambda: config_dict
+        else:
+            config = lambda: dict(
+                GPU_THROUGHPUT_STREAMS=backend.num_streams
+            )
+
         clip = core.ov.Model(
             clips, network_path,
             overlap=overlap, tilesize=tilesize,
             device=f"GPU.{backend.device_id}", builtin=False,
-            fp16=backend.fp16,
+            fp16=False, # use ov's internal quantization
             config=config,
             path_is_serialization=path_is_serialization,
             fp16_blacklist_ops=backend.fp16_blacklist_ops
@@ -1901,6 +2219,43 @@ def _inference(
             num_streams=backend.num_streams,
             builtin=False,
             fp16=backend.fp16,
+            path_is_serialization=path_is_serialization,
+        )
+    elif isinstance(backend, Backend.MIGX):
+        if path_is_serialization:
+            raise ValueError('"path_is_serialization" must be False for migx backend')
+
+        network_path = typing.cast(str, network_path)
+
+        channels = sum(clip.format.num_planes for clip in clips)
+
+        opt_shapes = backend.opt_shapes if backend.opt_shapes is not None else tilesize
+
+        mxr_path = migraphx_driver(
+            network_path,
+            channels=channels,
+            opt_shapes=opt_shapes,
+            fp16=backend.fp16,
+            fast_math=backend.fast_math,
+            exhaustive_tune=backend.exhaustive_tune,
+            device_id=backend.device_id,
+            input_name=input_name,
+            short_path=backend.short_path,
+            custom_env=backend.custom_env,
+            custom_args=backend.custom_args
+        )
+        clip = core.migx.Model(
+            clips, mxr_path,
+            overlap=overlap,
+            tilesize=tilesize,
+            device_id=backend.device_id
+        )
+    elif isinstance(backend, Backend.OV_NPU):
+        clip = core.ov.Model(
+            clips, network_path,
+            overlap=overlap, tilesize=tilesize,
+            device="NPU", builtin=False,
+            fp16=False, # use ov's internal quantization
             path_is_serialization=path_is_serialization,
         )
     else:
@@ -2119,6 +2474,26 @@ class BackendV2:
             **kwargs
         )
 
+    @staticmethod
+    def MIGX(*,
+        fp16: bool = False,
+        opt_shapes: typing.Optional[typing.Tuple[int, int]] = None,
+        **kwargs
+    ) -> Backend.MIGX:
+
+        return Backend.MIGX(
+            fp16=fp16,
+            opt_shapes=opt_shapes
+            **kwargs
+        )
+
+    @staticmethod
+    def OV_NPU(**kwargs
+    ) -> Backend.OV_NPU:
+        return Backend.OV_NPU(
+            **kwargs
+        )
+
 
 def fmtc_resample(clip: vs.VideoNode, **kwargs) -> vs.VideoNode:
     clip_org = clip
@@ -2133,3 +2508,11 @@ def fmtc_resample(clip: vs.VideoNode, **kwargs) -> vs.VideoNode:
         clip = core.resize.Point(clip, format=clip_org.format.id)
 
     return clip
+
+
+def parse_trt_version(version: int) -> typing.Tuple[int, int, int]:
+    # before trt 10
+    if version < 10000:
+        return version // 1000, (version // 100) % 10, version % 100
+    else:
+        return version // 10000, (version // 100) % 100, version % 100
