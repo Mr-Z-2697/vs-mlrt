@@ -1737,13 +1737,10 @@ def trtexec(
             "--noDataTransfers"
         ))
 
-    if trt_version >= 8600:
+    if trt_version >= (8, 6, 0):
         args.append("--skipInference")
     else:
-        if trt_version >= (8, 6, 0):
-            args.append("--skipInference")
-        else:
-            args.append("--buildOnly")
+        args.append("--buildOnly")
 
     if not tf32:
         args.append("--noTF32")
