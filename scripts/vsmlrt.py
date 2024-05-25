@@ -1,4 +1,4 @@
-__version__ = "3.20.9"
+__version__ = "3.20.11"
 
 __all__ = [
     "Backend", "BackendV2",
@@ -10,6 +10,7 @@ __all__ = [
     "RIFE", "RIFEModel", "RIFEMerge",
     "SAFA", "SAFAModel", "SAFAAdaptiveMode",
     "SCUNet", "SCUNetModel",
+    "SwinIR", "SwinIRModel",
     "inference"
 ]
 
@@ -165,6 +166,7 @@ class Backend:
         custom_env: typing.Dict[str, str] = field(default_factory=lambda: {})
         timing_cache: typing.Optional[typing.Union[str, bool]] = r"D:\vstrt.cache"
         custom_args: typing.List[str] = field(default_factory=lambda: [])
+        engine_folder: typing.Optional[str] = None
 
         # internal backend attributes
         supports_onnx_serialization: bool = False
@@ -1501,6 +1503,128 @@ def SCUNet(
     return clip
 
 
+@enum.unique
+class SwinIRModel(enum.IntEnum):
+    lightweightSR_DIV2K_s64w8_SwinIR_S_x2 = 0
+    lightweightSR_DIV2K_s64w8_SwinIR_S_x3 = 1
+    lightweightSR_DIV2K_s64w8_SwinIR_S_x4 = 2
+    realSR_BSRGAN_DFOWMFC_s64w8_SwinIR_L_x4_GAN = 3
+    # unused
+    realSR_BSRGAN_DFOWMFC_s64w8_SwinIR_L_x4_PSNR = 5
+    classicalSR_DF2K_s64w8_SwinIR_M_x2 = 6
+    classicalSR_DF2K_s64w8_SwinIR_M_x3 = 7
+    classicalSR_DF2K_s64w8_SwinIR_M_x4 = 8
+    classicalSR_DF2K_s64w8_SwinIR_M_x8 = 9
+    realSR_BSRGAN_DFO_s64w8_SwinIR_M_x2_GAN = 10
+    realSR_BSRGAN_DFO_s64w8_SwinIR_M_x2_PSNR = 11
+    realSR_BSRGAN_DFO_s64w8_SwinIR_M_x4_GAN = 12
+    realSR_BSRGAN_DFO_s64w8_SwinIR_M_x4_PSNR = 13
+    grayDN_DFWB_s128w8_SwinIR_M_noise15 = 14
+    grayDN_DFWB_s128w8_SwinIR_M_noise25 = 15
+    grayDN_DFWB_s128w8_SwinIR_M_noise50 = 16
+    colorDN_DFWB_s128w8_SwinIR_M_noise15 = 17
+    colorDN_DFWB_s128w8_SwinIR_M_noise25 = 18
+    colorDN_DFWB_s128w8_SwinIR_M_noise50 = 19
+    CAR_DFWB_s126w7_SwinIR_M_jpeg10 = 20
+    CAR_DFWB_s126w7_SwinIR_M_jpeg20 = 21
+    CAR_DFWB_s126w7_SwinIR_M_jpeg30 = 22
+    CAR_DFWB_s126w7_SwinIR_M_jpeg40 = 23
+    colorCAR_DFWB_s126w7_SwinIR_M_jpeg10 = 24
+    colorCAR_DFWB_s126w7_SwinIR_M_jpeg20 = 25
+    colorCAR_DFWB_s126w7_SwinIR_M_jpeg30 = 26
+    colorCAR_DFWB_s126w7_SwinIR_M_jpeg40 = 27
+
+
+def SwinIR(
+    clip: vs.VideoNode,
+    tiles: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
+    tilesize: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
+    overlap: typing.Optional[typing.Union[int, typing.Tuple[int, int]]] = None,
+    model: SwinIRModel = SwinIRModel.lightweightSR_DIV2K_s64w8_SwinIR_S_x2,
+    backend: backendT = Backend.OV_CPU()
+) -> vs.VideoNode:
+    """ SwinIR: Image Restoration Using Swin Transformer """
+
+    func_name = "vsmlrt.SwinIR"
+
+    if not isinstance(clip, vs.VideoNode):
+        raise TypeError(f'{func_name}: "clip" must be a clip!')
+
+    if clip.format.sample_type != vs.FLOAT or clip.format.bits_per_sample not in [16, 32]:
+        raise ValueError(f"{func_name}: only constant format 16/32 bit float input supported")
+
+    if not isinstance(model, int) or model not in SwinIRModel.__members__.values():
+        raise ValueError(f'{func_name}: invalid "model"')
+
+    if model in range(14, 17) or model in range(20, 24):
+        if clip.format.color_family != vs.GRAY:
+            raise ValueError(f'{func_name}: "clip" must be of GRAY color family')
+    elif clip.format.color_family != vs.RGB:
+        raise ValueError(f'{func_name}: "clip" must be of RGB color family')
+
+    if overlap is None:
+        overlap_w = overlap_h = 16
+    elif isinstance(overlap, int):
+        overlap_w = overlap_h = overlap
+    else:
+        overlap_w, overlap_h = overlap
+
+    multiple = 1
+
+    (tile_w, tile_h), (overlap_w, overlap_h) = calc_tilesize(
+        tiles=tiles, tilesize=tilesize,
+        width=clip.width, height=clip.height,
+        multiple=multiple,
+        overlap_w=overlap_w, overlap_h=overlap_h
+    )
+
+    if tile_w % multiple != 0 or tile_h % multiple != 0:
+        raise ValueError(
+            f'{func_name}: tile size must be divisible by {multiple} ({tile_w}, {tile_h})'
+        )
+
+    backend = init_backend(
+        backend=backend,
+        trt_opt_shapes=(tile_w, tile_h)
+    )
+
+    if model < 4:
+        model_name = tuple(SwinIRModel.__members__)[model]
+    else:
+        model_name = tuple(SwinIRModel.__members__)[model - 1]
+
+    model_name = model_name.replace("SwinIR_", "SwinIR-")
+
+    if model in range(3):
+        model_name = f"002_{model_name}"
+    elif model in (3, 5):
+        model_name = f"003_{model_name}"
+    elif model in range(6, 10):
+        model_name = f"001_{model_name}"
+    elif model in range(10, 14):
+        model_name = f"003_{model_name}"
+    elif model in range(14, 17):
+        model_name = f"004_{model_name}"
+    elif model in range(17, 20):
+        model_name = f"005_{model_name}"
+    elif model in range(20, 28):
+        model_name = f"006_{model_name}"
+
+    network_path = os.path.join(
+        models_path,
+        "swinir",
+        f"{model_name}.onnx"
+    )
+
+    clip = inference_with_fallback(
+        clips=[clip], network_path=network_path,
+        overlap=(overlap_w, overlap_h), tilesize=(tile_w, tile_h),
+        backend=backend
+    )
+
+    return clip
+
+
 def get_engine_path(
     network_path: str,
     min_shapes: typing.Tuple[int, int],
@@ -1518,7 +1642,8 @@ def get_engine_path(
     builder_optimization_level: int,
     max_aux_streams: typing.Optional[int],
     short_path: typing.Optional[bool],
-    bf16: bool
+    bf16: bool,
+    engine_folder: typing.Optional[str]
 ) -> str:
 
     with open(network_path, "rb") as file:
@@ -1559,10 +1684,15 @@ def get_engine_path(
     )
 
     dirname, basename = os.path.split(network_path)
+
+    if engine_folder is not None:
+        os.makedirs(engine_folder, exist_ok=True)
+        dirname = engine_folder
+
     return (
-        f"{network_path}.{identity}.engine",
+        f"{os.path.join(dirname, basename)}.{identity}.engine",
         os.path.join(dirname, f"{zlib.crc32((basename + identity).encode()):x}.engine")
-        )
+    )
 
 
 def trtexec(
@@ -1595,7 +1725,8 @@ def trtexec(
     bf16: bool = False,
     custom_env: typing.Dict[str, str] = {},
     timing_cache: str = None,
-    custom_args: typing.List[str] = []
+    custom_args: typing.List[str] = [],
+    engine_folder: typing.Optional[str] = None
 ) -> str:
 
     # tensort runtime version
@@ -1630,6 +1761,7 @@ def trtexec(
         max_aux_streams=max_aux_streams,
         short_path=short_path,
         bf16=bf16,
+        engine_folder=engine_folder,
     )
 
     if short_path or (short_path is None and platform.system() == "Windows"):
@@ -1641,13 +1773,15 @@ def trtexec(
     if os.access(engine_path, mode=os.R_OK):
         return engine_path
 
-    alter_engine_path = os.path.join(
-        tempfile.gettempdir(),
-        os.path.splitdrive(engine_path)[1][1:]
-    )
+    # do not consider alternative path when the engine_folder is given
+    if engine_folder is None:
+        alter_engine_path = os.path.join(
+            tempfile.gettempdir(),
+            os.path.splitdrive(engine_path)[1][1:]
+        )
 
-    if os.access(alter_engine_path, mode=os.R_OK):
-        return alter_engine_path
+        if os.access(alter_engine_path, mode=os.R_OK):
+            return alter_engine_path
 
     try:
         # test writability
@@ -1655,12 +1789,16 @@ def trtexec(
             pass
         os.remove(engine_path)
     except PermissionError:
-        print(f"{engine_path} not writable", file=sys.stderr)
-        engine_path = alter_engine_path
-        dirname = os.path.dirname(engine_path)
-        if not os.path.exists(dirname):
-            os.makedirs(dirname)
-        print(f"change engine path to {engine_path}", file=sys.stderr)
+        if engine_folder is None:
+            print(f"{engine_path} is not writable", file=sys.stderr)
+            engine_path = alter_engine_path
+            dirname = os.path.dirname(engine_path)
+            if not os.path.exists(dirname):
+                os.makedirs(dirname)
+            print(f"change engine path to {engine_path}", file=sys.stderr)
+        else:
+            # do not consider alternative path when the engine_folder is given
+            raise PermissionError(f"{engine_path} is not writable")
 
     if len(engine_path) > 255 and platform.system() == "Windows":
         raise ValueError("Engine path will exceed windows limit, try use short_path.")
@@ -2197,7 +2335,8 @@ def _inference(
             bf16=backend.bf16,
             custom_env=backend.custom_env,
             timing_cache=backend.timing_cache,
-            custom_args=backend.custom_args
+            custom_args=backend.custom_args,
+            engine_folder=backend.engine_folder,
         )
         clip = core.trt.Model(
             clips, engine_path,
