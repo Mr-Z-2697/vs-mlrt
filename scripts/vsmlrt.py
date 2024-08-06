@@ -1,4 +1,4 @@
-__version__ = "3.21.10"
+__version__ = "3.21.14"
 
 __all__ = [
     "Backend", "BackendV2",
@@ -922,6 +922,8 @@ class RIFEModel(enum.IntEnum):
     v4_17_lite = 4171
     v4_18 = 418
     v4_19 = 419
+    v4_20 = 420
+    v4_21 = 421
 
 
 def RIFEMerge(
@@ -985,6 +987,10 @@ def RIFEMerge(
     model_major = int(str(int(model))[0])
     model_minor = int(str(int(model))[1:3])
     lite = "_lite" if len(str(int(model))) >= 4 else ""
+
+    if (model_major, model_minor) >= (4, 21) and ensemble:
+        raise ValueError(f'{func_name}: ensemble is not supported since RIFE v4.21')
+
     version = f"v{model_major}.{model_minor}{lite}{'_ensemble' if ensemble else ''}"
 
     if (model_major, model_minor) >= (4, 7) and scale != 1.0:
@@ -1659,13 +1665,16 @@ def SwinIR(
 
 @enum.unique
 class ArtCNNModel(enum.IntEnum):
-    ArtCNN_C4F32 = 0
-    ArtCNN_C4F32_DS = 1
+    ArtCNN_C4F32 = 0 # deprecated
+    ArtCNN_C4F32_DS = 1 # deprecated
     ArtCNN_C16F64 = 2
     ArtCNN_C16F64_DS = 3
-    ArtCNN_C4F32_Chroma = 4
+    ArtCNN_C4F32_Chroma = 4 # deprecated
     ArtCNN_C16F64_Chroma = 5
     ArtCNN_R16F96 = 6
+    ArtCNN_R8F64 = 7
+    ArtCNN_R8F64_DS = 8
+    ArtCNN_R8F64_Chroma = 9
 
 
 def ArtCNN(
@@ -1689,7 +1698,7 @@ def ArtCNN(
     if not isinstance(model, int) or model not in ArtCNNModel.__members__.values():
         raise ValueError(f'{func_name}: invalid "model"')
 
-    if model in range(4, 6):
+    if model in (4, 5, 9):
         if clip.format.color_family != vs.YUV:
             raise ValueError(f'{func_name}: "clip" must be of YUV color family')
         if clip.format.subsampling_h != 0 or clip.format.subsampling_w != 0:
@@ -1734,7 +1743,7 @@ def ArtCNN(
         f"{model_name}.onnx"
     )
 
-    if model in range(4, 6):
+    if model in (4, 5, 9):
         if clip.format.bits_per_sample == 16:
             clip = core.akarin.Expr(clip, ["", "x 0.5 +"])
         else:
