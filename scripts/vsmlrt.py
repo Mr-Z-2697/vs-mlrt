@@ -1,4 +1,4 @@
-__version__ = "3.21.15"
+__version__ = "3.22.0"
 
 __all__ = [
     "Backend", "BackendV2",
@@ -187,6 +187,7 @@ class Backend:
         custom_env: typing.Dict[str, str] = field(default_factory=lambda: {})
         custom_args: typing.List[str] = field(default_factory=lambda: [])
         engine_folder: typing.Optional[str] = None
+        max_tactics: typing.Optional[int] = None
 
         timing_cache: typing.Optional[typing.Union[str,bool]] = r'D:\vstrt.cache' if os.name=='nt' and os.getlogin()=='55087' else None # if it's me LOL
 
@@ -268,6 +269,17 @@ class Backend:
         # internal backend attributes
         supports_onnx_serialization: bool = True
 
+    @dataclass(frozen=False)
+    class ORT_COREML:
+        """ backend for coreml """
+        num_streams: int = 1
+        verbosity: int = 0
+        fp16: bool = False
+        fp16_blacklist_ops: typing.Optional[typing.Sequence[str]] = None
+
+        # internal backend attributes
+        supports_onnx_serialization: bool = True
+
 
 backendT = typing.Union[
     Backend.OV_CPU,
@@ -279,6 +291,7 @@ backendT = typing.Union[
     Backend.ORT_DML,
     Backend.MIGX,
     Backend.OV_NPU,
+    Backend.ORT_COREML,
 ]
 
 
@@ -581,6 +594,9 @@ class RealESRGANModel(enum.IntEnum):
     animejanaiV3_HD_L1 = 5008
     animejanaiV3_HD_L2 = 5009
     animejanaiV3_HD_L3 = 5010
+    # contributed=Ani4K-v2 https://github.com/Sirosky/Upscale-Hub/releases/tag/Ani4K-v2
+    Ani4Kv2_G6i2_Compact = 7000
+    Ani4Kv2_G6i2_UltraCompact = 7001
 
 RealESRGANv2Model = RealESRGANModel
 
@@ -642,7 +658,7 @@ def RealESRGAN(
             "RealESRGANv2",
             "realesr-animevideov3.onnx"
         )
-    elif model in [5005, 5006, 5007, 5008, 5009, 5010]:
+    elif model in [5005, 5006, 5007, 5008, 5009, 5010, 7000, 7001]:
         network_path = os.path.join(
             models_path,
             "RealESRGANv2",
@@ -925,6 +941,9 @@ class RIFEModel(enum.IntEnum):
     v4_20 = 420
     v4_21 = 421
     v4_22 = 422
+    v4_22_lite = 4221
+    v4_23 = 423
+    v4_24 = 424
 
 
 def RIFEMerge(
@@ -989,8 +1008,8 @@ def RIFEMerge(
     model_minor = int(str(int(model))[1:3])
     lite = "_lite" if len(str(int(model))) >= 4 else ""
 
-    if (model_major, model_minor) >= (4, 21) and ensemble:
-        raise ValueError(f'{func_name}: ensemble is not supported since RIFE v4.21')
+    if (4, 21) <= (model_major, model_minor) < (4, 24) and ensemble:
+        raise ValueError(f'{func_name}: ensemble is not supported in RIFE v4.21 ~ v4.23')
 
     version = f"v{model_major}.{model_minor}{lite}{'_ensemble' if ensemble else ''}"
 
@@ -1879,7 +1898,8 @@ def trtexec(
     custom_env: typing.Dict[str, str] = {},
     timing_cache: str = None,
     custom_args: typing.List[str] = [],
-    engine_folder: typing.Optional[str] = None
+    engine_folder: typing.Optional[str] = None,
+    max_tactics: typing.Optional[int] = None
 ) -> str:
 
     # tensort runtime version
@@ -2090,6 +2110,10 @@ def trtexec(
     if trt_version >= (9, 0, 0):
         if bf16:
             args.append("--bf16")
+
+    if trt_version >= (10, 4, 0):
+        if max_tactics is not None:
+            args.append(f"--maxTactics={max_tactics}")
 
     args.extend(custom_args)
 
@@ -2343,7 +2367,8 @@ def _inference(
     backend: backendT,
     path_is_serialization: bool = False,
     input_name: str = "input",
-    flexible_output_prop: typing.Optional[str] = None
+    flexible_output_prop: typing.Optional[str] = None,
+    batch_size: int = 1
 ) -> typing.Union[vs.VideoNode, typing.Dict[str, typing.Any]]:
 
     if not path_is_serialization:
@@ -2356,6 +2381,87 @@ def _inference(
                 "https://github.com/AmusementClub/vs-mlrt/releases/tag/model-20220923 and "
                 "https://github.com/AmusementClub/vs-mlrt/releases/tag/external-models"
             )
+
+    if path_is_serialization:
+        if isinstance(backend, Backend.TRT):
+            raise ValueError('"path_is_serialization" must be False for trt backend')
+        elif isinstance(backend, Backend.MIGX):
+            raise ValueError('"path_is_serialization" must be False for migx backend')
+
+    if not isinstance(batch_size, int) or batch_size < 1:
+        raise ValueError('"batch_size" must be a positve integer')
+
+    if batch_size > 1:
+        import numpy as np
+        import onnx
+
+        if path_is_serialization:
+            model = onnx.load_model_from_string(network_path)
+        else:
+            model = onnx.load(network_path)
+
+        graph = model.graph
+        in_channels = graph.input[0].type.tensor_type.shape.dim[1].dim_value
+        graph.input[0].type.tensor_type.shape.dim[1].dim_value *= batch_size
+        graph.output[0].type.tensor_type.shape.dim[1].dim_param = "_vsmlrt_output_channels"
+
+        input_name = graph.input[0].name
+        output_name = graph.output[0].name
+        for node in graph.node:
+            for i, name in enumerate(node.input):
+                if name == input_name:
+                    node.input[i] = "_vsmlrt_input"
+
+            for i, name in enumerate(node.output):
+                if name == output_name:
+                    node.output[i] = "_vsmlrt_output"
+
+        graph.node.insert(1, onnx.helper.make_node(
+            op_type="Constant",
+            inputs=[],
+            outputs=["_vsmlrt_input_shape"],
+            value=onnx.numpy_helper.from_array(np.array([-1, in_channels, 0, 0]))
+        ))
+        graph.node.insert(2, onnx.helper.make_node(
+            op_type="Reshape",
+            inputs=[input_name, "_vsmlrt_input_shape"],
+            outputs=["_vsmlrt_input"]
+        ))
+
+        graph.node.insert(-1, onnx.helper.make_node(
+            op_type="Constant",
+            inputs=[],
+            outputs=["_vsmlrt_output_shape"],
+            value=onnx.numpy_helper.from_array(np.array([1, -1, 0, 0]))
+        ))
+        graph.node.insert(-1, onnx.helper.make_node(
+            op_type="Reshape",
+            inputs=["_vsmlrt_output", "_vsmlrt_output_shape"],
+            outputs=[output_name]
+        ))
+
+        if backend.supports_onnx_serialization:
+            network_path = model.SerializeToString()
+        else:
+            network_path = f"{network_path}_batch{batch_size}.onnx"
+            onnx.save(model, network_path)
+
+        path_is_serialization = backend.supports_onnx_serialization
+
+        pad = (batch_size - clips[0].num_frames % batch_size) % batch_size
+        if pad:
+            clips = [clip.std.DuplicateFrames([clip.num_frames - 1] * pad) for clip in clips]
+
+        clips = [
+            clip[i::batch_size]
+            for i in range(batch_size)
+            for clip in clips
+        ]
+
+        flexible_output_prop_orig = flexible_output_prop
+
+        if flexible_output_prop is None:
+            flexible_output_prop = "vsmlrt_flexible_batch"
 
     kwargs = dict(overlap=overlap, tilesize=tilesize)
     if flexible_output_prop is not None:
@@ -2377,6 +2483,17 @@ def _inference(
             clips, network_path,
             provider="DML", builtin=False,
             device_id=backend.device_id,
+            num_streams=backend.num_streams,
+            verbosity=backend.verbosity,
+            fp16=backend.fp16,
+            path_is_serialization=path_is_serialization,
+            fp16_blacklist_ops=backend.fp16_blacklist_ops,
+            **kwargs
+        )
+    elif isinstance(backend, Backend.ORT_COREML):
+        ret = core.ort.Model(
+            clips, network_path,
+            provider="COREML", builtin=False,
             num_streams=backend.num_streams,
             verbosity=backend.verbosity,
             fp16=backend.fp16,
@@ -2471,9 +2588,6 @@ def _inference(
             **kwargs
         )
     elif isinstance(backend, Backend.TRT):
-        if path_is_serialization:
-            raise ValueError('"path_is_serialization" must be False for trt backend')
-
         network_path = typing.cast(str, network_path)
 
         channels = sum(clip.format.num_planes for clip in clips)
@@ -2515,6 +2629,7 @@ def _inference(
             timing_cache=backend.timing_cache,
             custom_args=backend.custom_args,
             engine_folder=backend.engine_folder,
+            max_tactics=backend.max_tactics,
         )
         ret = core.trt.Model(
             clips, engine_path,
@@ -2535,9 +2650,6 @@ def _inference(
             **kwargs
         )
     elif isinstance(backend, Backend.MIGX):
-        if path_is_serialization:
-            raise ValueError('"path_is_serialization" must be False for migx backend')
-
         network_path = typing.cast(str, network_path)
 
         channels = sum(clip.format.num_planes for clip in clips)
@@ -2573,6 +2685,37 @@ def _inference(
     else:
         raise TypeError(f'unknown backend {backend}')
 
+    if batch_size > 1:
+        clip = ret["clip"]
+        num_planes = ret["num_planes"]
+        clips = [
+            clip.std.PropToClip(prop=f"{flexible_output_prop}{i}")
+            for i in range(num_planes)
+        ]
+
+        if flexible_output_prop_orig is None:
+            if num_planes == batch_size * 3:
+                clips = [
+                    core.std.ShufflePlanes(clips[i:i+3], [0] * 3, vs.RGB)
+                    for i in range(0, num_planes, 3)
+                ]
+            elif num_planes != batch_size:
+                raise ValueError("number of output channels must be 1 or 3")
+
+            ret = core.std.Interleave(clips)
+            if pad:
+                ret = ret[:-pad]
+        else:
+            clips = [core.std.Interleave(clips[i::batch_size]) for i in range(num_planes // batch_size)]
+            if pad:
+                clips = [clip[:-pad] for clip in clips]
+
+            clip = clip.std.BlankClip(keep=True)
+            for i in range(len(clips)):
+                clip = clip.std.ClipToProp(clips[i], f"{flexible_output_prop_orig}{i}")
+
+            ret = dict(clip=clip, num_planes=len(clips))
+
     return ret
 
 
@@ -2583,7 +2726,8 @@ def inference_with_fallback(
     tilesize: typing.Tuple[int, int],
     backend: backendT,
     path_is_serialization: bool = False,
-    input_name: str = "input"
+    input_name: str = "input",
+    batch_size: int = 1 # experimental
 ) -> vs.VideoNode:
 
     try:
@@ -2592,7 +2736,8 @@ def inference_with_fallback(
             overlap=overlap, tilesize=tilesize,
             backend=backend,
             path_is_serialization=path_is_serialization,
-            input_name=input_name
+            input_name=input_name,
+            batch_size=batch_size
         )
     except Exception as e:
         if fallback_backend is not None:
@@ -2605,7 +2750,8 @@ def inference_with_fallback(
                 overlap=overlap, tilesize=tilesize,
                 backend=fallback_backend,
                 path_is_serialization=path_is_serialization,
-                input_name=input_name
+                input_name=input_name,
+                batch_size=batch_size
             )
         else:
             raise e
@@ -2619,7 +2765,8 @@ def inference(
     overlap: typing.Tuple[int, int] = (0, 0),
     tilesize: typing.Optional[typing.Tuple[int, int]] = None,
     backend: backendT = Backend.TRT(),
-    input_name: typing.Optional[str] = "input"
+    input_name: typing.Optional[str] = "input",
+    batch_size: int = 1 # experimental
 ) -> vs.VideoNode:
 
     if isinstance(clips, vs.VideoNode):
@@ -2640,7 +2787,8 @@ def inference(
         tilesize=tilesize,
         backend=backend,
         path_is_serialization=False,
-        input_name=input_name
+        input_name=input_name,
+        batch_size=batch_size
     )
 
 
@@ -2652,7 +2800,8 @@ def flexible_inference_with_fallback(
     backend: backendT,
     path_is_serialization: bool = False,
     input_name: str = "input",
-    flexible_output_prop: str = "vsmlrt_flexible"
+    flexible_output_prop: str = "vsmlrt_flexible",
+    batch_size: int = 1 # experimental
 ) -> typing.List[vs.VideoNode]:
 
     try:
@@ -2662,7 +2811,8 @@ def flexible_inference_with_fallback(
             backend=backend,
             path_is_serialization=path_is_serialization,
             input_name=input_name,
-            flexible_output_prop=flexible_output_prop
+            flexible_output_prop=flexible_output_prop,
+            batch_size=batch_size
         )
     except Exception as e:
         if fallback_backend is not None:
@@ -2676,7 +2826,8 @@ def flexible_inference_with_fallback(
                 backend=fallback_backend,
                 path_is_serialization=path_is_serialization,
                 input_name=input_name,
-                flexible_output_prop=flexible_output_prop
+                flexible_output_prop=flexible_output_prop,
+                batch_size=batch_size
             )
         else:
             raise e
@@ -2700,7 +2851,8 @@ def flexible_inference(
     tilesize: typing.Optional[typing.Tuple[int, int]] = None,
     backend: backendT = Backend.OV_CPU(),
     input_name: typing.Optional[str] = "input",
-    flexible_output_prop: str = "vsmlrt_flexible"
+    flexible_output_prop: str = "vsmlrt_flexible",
+    batch_size: int = 1 # experimental
 ) -> typing.List[vs.VideoNode]:
 
     if isinstance(clips, vs.VideoNode):
@@ -2722,7 +2874,8 @@ def flexible_inference(
         backend=backend,
         path_is_serialization=False,
         input_name=input_name,
-        flexible_output_prop=flexible_output_prop
+        flexible_output_prop=flexible_output_prop,
+        batch_size=batch_size
     )
 
 
@@ -2886,6 +3039,18 @@ class BackendV2:
     def OV_NPU(**kwargs
     ) -> Backend.OV_NPU:
         return Backend.OV_NPU(
+            **kwargs
+        )
+
+    @staticmethod
+    def ORT_COREML(*,
+        num_streams: int = 1,
+        fp16: bool = False,
+        **kwargs
+    ) -> Backend.ORT_COREML:
+        return Backend.ORT_COREML(
+            num_streams=num_streams,
+            fp16=fp16,
             **kwargs
         )
 

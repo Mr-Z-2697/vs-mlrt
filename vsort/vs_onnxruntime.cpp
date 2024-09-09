@@ -1012,10 +1012,12 @@ static void VS_CC vsOrtCreate(
         path_is_serialization = false;
     }
 
+#ifdef ENABLE_CUDA
     bool use_cuda_graph = !!vsapi->propGetInt(in, "use_cuda_graph", 0, &error);
     if (error) {
         use_cuda_graph = false;
     }
+#endif // ENABLE_CUDA
 
     int output_format = int64ToIntS(vsapi->propGetInt(in, "output_format", 0, &error));
     if (error) {
@@ -1230,7 +1232,7 @@ static void VS_CC vsOrtCreate(
         }
 #endif // ENABLE_CUDA
 #ifdef ENABLE_COREML
-        else if (d->backend == Backend::COREML) {
+        if (d->backend == Backend::COREML) {
             checkError(OrtSessionOptionsAppendExecutionProvider_CoreML(
                 session_options,
                 0
@@ -1238,7 +1240,7 @@ static void VS_CC vsOrtCreate(
         }
 #endif // ENABLE_COREML
 #ifdef ENABLE_DML
-        else if (d->backend == Backend::DML) {
+        if (d->backend == Backend::DML) {
             const OrtDmlApi * ortdmlapi {};
             checkError(ortapi->GetExecutionProviderApi("DML", ORT_API_VERSION, (const void **) &ortdmlapi));
             checkError(ortdmlapi->SessionOptionsAppendExecutionProvider_DML(session_options, d->device_id));
