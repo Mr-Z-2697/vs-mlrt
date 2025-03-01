@@ -1,4 +1,4 @@
-__version__ = "3.22.8"
+__version__ = "3.22.13"
 
 __all__ = [
     "Backend", "BackendV2",
@@ -188,6 +188,8 @@ class Backend:
         custom_args: typing.List[str] = field(default_factory=lambda: [])
         engine_folder: typing.Optional[str] = None
         max_tactics: typing.Optional[int] = None
+        tiling_optimization_level: int = 0
+        l2_limit_for_tiling: int = -1
 
         timing_cache: typing.Optional[typing.Union[str,bool]] = r'D:\vstrt.cache' if os.name=='nt' and os.getlogin()=='55087' else None # if it's me LOL
 
@@ -277,6 +279,7 @@ class Backend:
         verbosity: int = 0
         fp16: bool = False
         fp16_blacklist_ops: typing.Optional[typing.Sequence[str]] = None
+        ml_program: int = 0
 
         # internal backend attributes
         supports_onnx_serialization: bool = True
@@ -534,7 +537,7 @@ def DPIR(
         strength = core.std.BlankClip(clip, format=gray_format, color=strength / 255, keep=True)
 
     if overlap is None:
-        overlap_w = overlap_h = 0
+        overlap_w = overlap_h = 16
     elif isinstance(overlap, int):
         overlap_w = overlap_h = overlap
     else:
@@ -949,6 +952,7 @@ class RIFEModel(enum.IntEnum):
     v4_25_lite = 4251
     v4_25_heavy = 4252
     v4_26 = 426
+    v4_26_heavy = 4262
 
 
 def RIFEMerge(
@@ -1018,6 +1022,8 @@ def RIFEMerge(
     elif (model_major, model_minor, rife_type) == (4, 25, "_lite"):
         tilesize_requirement = 128
     elif (model_major, model_minor, rife_type) == (4, 25, "_heavy"):
+        tilesize_requirement = 64
+    elif (model_major, model_minor, rife_type) == (4, 26, "_heavy"):
         tilesize_requirement = 64
     else:
         tilesize_requirement = 32
@@ -1541,7 +1547,7 @@ def SCUNet(
         raise ValueError(f'{func_name}: "clip" must be of GRAY color family')
 
     if overlap is None:
-        overlap_w = overlap_h = 16
+        overlap_w = overlap_h = 64
     elif isinstance(overlap, int):
         overlap_w = overlap_h = overlap
     else:
@@ -1705,16 +1711,18 @@ def SwinIR(
 
 @enum.unique
 class ArtCNNModel(enum.IntEnum):
-    ArtCNN_C4F32 = 0 # deprecated
-    ArtCNN_C4F32_DS = 1 # deprecated
+    ArtCNN_C4F32 = 0
+    ArtCNN_C4F32_DS = 1
     ArtCNN_C16F64 = 2
     ArtCNN_C16F64_DS = 3
-    ArtCNN_C4F32_Chroma = 4 # deprecated
+    ArtCNN_C4F32_Chroma = 4
     ArtCNN_C16F64_Chroma = 5
     ArtCNN_R16F96 = 6
     ArtCNN_R8F64 = 7
     ArtCNN_R8F64_DS = 8
     ArtCNN_R8F64_Chroma = 9
+    ArtCNN_C4F16 = 10
+    ArtCNN_C4F16_DS = 11
 
 
 def ArtCNN(
@@ -1919,7 +1927,9 @@ def trtexec(
     timing_cache: str = None,
     custom_args: typing.List[str] = [],
     engine_folder: typing.Optional[str] = None,
-    max_tactics: typing.Optional[int] = None
+    max_tactics: typing.Optional[int] = None,
+    tiling_optimization_level: int = 0,
+    l2_limit_for_tiling: int = -1,
 ) -> str:
 
     # tensort runtime version
@@ -2134,6 +2144,10 @@ def trtexec(
     if trt_version >= (10, 4, 0):
         if max_tactics is not None:
             args.append(f"--maxTactics={max_tactics}")
+
+    if trt_version >= (10, 8, 0) and tiling_optimization_level != 0:
+        args.append(f"--tilingOptimizationLevel={tiling_optimization_level}")
+        args.append(f"--l2LimitForTiling={l2_limit_for_tiling}")
 
     args.extend(custom_args)
 
@@ -2519,6 +2533,7 @@ def _inference(
             fp16=backend.fp16,
             path_is_serialization=path_is_serialization,
             fp16_blacklist_ops=backend.fp16_blacklist_ops,
+            ml_program=backend.ml_program,
             **kwargs
         )
     elif isinstance(backend, Backend.ORT_CUDA):
@@ -2650,6 +2665,8 @@ def _inference(
             custom_args=backend.custom_args,
             engine_folder=backend.engine_folder,
             max_tactics=backend.max_tactics,
+            tiling_optimization_level=backend.tiling_optimization_level,
+            l2_limit_for_tiling=backend.l2_limit_for_tiling,
         )
         ret = core.trt.Model(
             clips, engine_path,

@@ -68,7 +68,10 @@ using namespace std::string_literals;
 static const VSPlugin * myself = nullptr;
 static const OrtApi * ortapi = nullptr;
 static std::atomic<int64_t> logger_id = 0;
+
+#if defined(ENABLE_CUDA) || defined(ENABLE_DML)
 static std::mutex capture_lock;
+#endif
 
 
 // rename GridSample to com.microsoft::GridSample
@@ -446,13 +449,20 @@ struct Resource {
     cudaStream_t stream;
     CUDA_Resource_t input;
     CUDA_Resource_t output;
-    bool require_replay;
 #endif // ENABLE_CUDA
+
+#if defined(ENABLE_CUDA) || defined(ENABLE_DML)
+    bool require_replay;
+#endif
 };
 
 struct vsOrtData {
     std::vector<VSNodeRef *> nodes;
     std::unique_ptr<VSVideoInfo> out_vi;
+
+#ifdef ENABLE_COREML
+    bool ml_program;
+#endif //ENABLE_COREML
 
     int overlap_w, overlap_h;
 
@@ -695,7 +705,7 @@ static const VSFrameRef *VS_CC vsOrtGetFrame(
                 }
 #endif // ENABLE_CUDA
 
-#ifdef ENABLE_CUDA
+#if defined(ENABLE_CUDA) || defined(ENABLE_DML)
                 if (resource.require_replay) [[unlikely]] {
                     resource.require_replay = false;
 
@@ -706,11 +716,26 @@ static const VSFrameRef *VS_CC vsOrtGetFrame(
                     // note that this applies only to stream capture from the ort library
                     // this fails when another plugin also uses global-mode stream capture
                     std::lock_guard _ { capture_lock };
-                    checkError(ortapi->RunWithBinding(resource.session, run_options, resource.binding));
+                    if (d->backend == Backend::CUDA) {
+                        checkError(ortapi->RunWithBinding(resource.session, run_options, resource.binding));
+                    } else if (d->backend == Backend::DML) {
+                        for (int i = 0; i < 2; i++) {
+                            checkError(ortapi->Run(
+                                resource.session,
+                                run_options,
+                                &resource.input_name,
+                                &resource.input_tensor,
+                                1,
+                                &resource.output_name,
+                                1,
+                                &resource.output_tensor
+                            ));
+                        }
+                    }
 
                     // onnxruntime replays the graph itself in CUDAExecutionProvider::OnRunEnd
                 } else
-#endif // ENABLE_CUDA
+#endif // defined(ENABLE_CUDA) || defined(ENABLE_DML)
                 if (d->backend == Backend::CPU || d->backend == Backend::CUDA) {
                     checkError(ortapi->RunWithBinding(resource.session, run_options, resource.binding));
                 } else {
@@ -908,6 +933,19 @@ static void VS_CC vsOrtCreate(
     if (error) {
         verbosity = ORT_LOGGING_LEVEL_WARNING;
     }
+#ifdef ENABLE_COREML
+    auto ml_program = vsapi->propGetInt(in, "ml_program", 0, &error);
+
+    if (error) {
+        d->ml_program = false;
+    } else if (ml_program == 0) {
+        d->ml_program = false;
+    } else if (ml_program == 1) {
+        d->ml_program = true;
+    } else {
+        return set_error("\"ml_program\" must be 0 or 1");
+    }
+#endif //ENABLE_COREML
 
     // match verbosity of vs-trt
     verbosity = static_cast<OrtLoggingLevel>(4 - static_cast<int>(verbosity));
@@ -1232,10 +1270,12 @@ static void VS_CC vsOrtCreate(
         }
 #endif // ENABLE_CUDA
 #ifdef ENABLE_COREML
+        uint32_t coreml_flag = 0;
+        if (ml_program) coreml_flag |= 0x010;
         if (d->backend == Backend::COREML) {
             checkError(OrtSessionOptionsAppendExecutionProvider_CoreML(
                 session_options,
-                0
+                coreml_flag
             ));
         }
 #endif // ENABLE_COREML
@@ -1244,6 +1284,7 @@ static void VS_CC vsOrtCreate(
             const OrtDmlApi * ortdmlapi {};
             checkError(ortapi->GetExecutionProviderApi("DML", ORT_API_VERSION, (const void **) &ortdmlapi));
             checkError(ortdmlapi->SessionOptionsAppendExecutionProvider_DML(session_options, d->device_id));
+            resource.require_replay = true;
         }
 #endif // ENABLE_DML
 
@@ -1394,7 +1435,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(
         "network_path:data;"
         "overlap:int[]:opt;"
         "tilesize:int[]:opt;"
-        "provider:data:opt;" // "": Default (CPU), "CUDA": CUDA
+        "provider:data:opt;" // "": Default (CPU), "CUDA": CUDA, "COREML": COREML, "DML": DML
         "device_id:int:opt;"
         "num_streams:int:opt;"
         "verbosity:int:opt;"
@@ -1409,6 +1450,9 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(
         "output_format:int:opt;"
         "tf32:int:opt;"
         "flexible_output_prop:data:opt;"
+#ifdef ENABLE_COREML
+        "ml_program:int:opt;"
+#endif //ENABLE_COREML
         , vsOrtCreate,
         nullptr,
         plugin

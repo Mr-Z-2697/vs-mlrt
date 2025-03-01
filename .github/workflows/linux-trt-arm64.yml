@@ -1,15 +1,15 @@
-name: Build (Linux-TRT)
+name: Build (Linux-TRT, ARM64)
 
 on:
   push:
     paths:
       - 'vstrt/**'
-      - '.github/workflows/linux-trt.yml'
+      - '.github/workflows/linux-trt-arm64.yml'
   workflow_dispatch:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     
     defaults:
       run:
@@ -32,7 +32,7 @@ jobs:
 
     - name: Setup CUDA and TensorRT
       run: |
-        wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+        wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/cuda-keyring_1.1-1_all.deb
         sudo dpkg -i cuda-keyring_1.1-1_all.deb
         sudo apt-get update
         export TRT_VER=10.8.0.43-1+cuda12.8
@@ -45,7 +45,7 @@ jobs:
       run: cmake -S . -B build -G Ninja -LA
         -D CMAKE_BUILD_TYPE=Release
         -D VAPOURSYNTH_INCLUDE_DIRECTORY="`pwd`/vapoursynth/include"
-        -D CMAKE_CXX_FLAGS="-Wall -ffast-math -march=x86-64-v3"
+        -D CMAKE_CXX_FLAGS="-Wall -ffast-math"
 
     - name: Build
       run: cmake --build build --verbose
@@ -64,7 +64,7 @@ jobs:
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: VSTRT-Linux-x64
+        name: VSTRT-Linux-ARM64
         path: vstrt/artifact
         overwrite: true
 
