@@ -178,7 +178,7 @@ class Backend:
         min_shapes: typing.Tuple[int, int] = (32,32)
         faster_dynamic_shapes: bool = True
         force_fp16: bool = False
-        builder_optimization_level: int = 5
+        builder_optimization_level: int = 3
         max_aux_streams: typing.Optional[int] = None
         short_path: typing.Optional[bool] = False
         int8: bool = False
