@@ -1,4 +1,4 @@
-__version__ = "3.22.13"
+__version__ = "3.22.16"
 
 __all__ = [
     "Backend", "BackendV2",
@@ -527,7 +527,7 @@ def DPIR(
         if strength.num_frames != clip.num_frames:
             raise ValueError(f'{func_name}: "strength" must be of the same length as "clip"')
 
-        strength = core.std.Expr(strength, "x 255 /", format=gray_format)
+        strength = _expr(strength, "x 255 /", format=gray_format)
     else:
         try:
             strength = float(strength)
@@ -644,6 +644,11 @@ def RealESRGAN(
         multiple=multiple,
         overlap_w=overlap_w, overlap_h=overlap_h
     )
+
+    if tile_w % multiple != 0 or tile_h % multiple != 0:
+        raise ValueError(
+            f'{func_name}: tile size must be divisible by {multiple} ({tile_w}, {tile_h})'
+        )
 
     backend = init_backend(
         backend=backend,
@@ -823,7 +828,7 @@ def CUGAN(
 
         if backend.supports_onnx_serialization:
             if conformance and version == 2:
-                clip = core.std.Expr(clip, "x 0.7 * 0.15 +")
+                clip = _expr(clip, "x 0.7 * 0.15 +")
 
             clip = inference_with_fallback(
                 clips=[clip], network_path=model.SerializeToString(),
@@ -832,7 +837,7 @@ def CUGAN(
             )
 
             if conformance and version == 2:
-                clip = core.std.Expr(clip, "x 0.15 - 0.7 /")
+                clip = _expr(clip, "x 0.15 - 0.7 /")
 
             return clip
 
@@ -841,7 +846,7 @@ def CUGAN(
 
     # https://github.com/bilibili/ailab/blob/e102bef22384c629f82552dbec3d6b5bab125639/Real-CUGAN/upcunet_v3.py#L1275-L1276
     if conformance and version == 2:
-        clip = core.std.Expr(clip, "x 0.7 * 0.15 +")
+        clip = _expr(clip, "x 0.7 * 0.15 +")
 
     clip = inference_with_fallback(
         clips=[clip], network_path=network_path,
@@ -851,7 +856,7 @@ def CUGAN(
 
     # https://github.com/bilibili/ailab/blob/e102bef22384c629f82552dbec3d6b5bab125639/Real-CUGAN/upcunet_v3.py#L269
     if conformance and version == 2:
-        clip = core.std.Expr(clip, "x 0.15 - 0.7 /")
+        clip = _expr(clip, "x 0.15 - 0.7 /")
 
     return clip
 
@@ -1395,6 +1400,7 @@ class SAFAModel(enum.IntEnum):
     v0_2 = 2
     v0_3 = 3
     v0_4 = 4
+    v0_5 = 5
 
 
 @enum.unique
@@ -1449,6 +1455,11 @@ def SAFA(
         multiple=multiple,
         overlap_w=overlap_w, overlap_h=overlap_h
     )
+
+    if tile_w % multiple != 0 or tile_h % multiple != 0:
+        raise ValueError(
+            f'{func_name}: tile size must be divisible by {multiple} ({tile_w}, {tile_h})'
+        )
 
     backend = init_backend(
         backend=backend,
@@ -1792,10 +1803,7 @@ def ArtCNN(
     )
 
     if model in (4, 5, 9):
-        if clip.format.bits_per_sample == 16:
-            clip = core.akarin.Expr(clip, ["", "x 0.5 +"])
-        else:
-            clip = core.std.Expr(clip, ["", "x 0.5 +"])
+        clip = _expr(clip, ["", "x 0.5 +"])
 
         clip_u, clip_v = flexible_inference_with_fallback(
             clips=[clip], network_path=network_path,
@@ -1805,10 +1813,7 @@ def ArtCNN(
 
         clip = core.std.ShufflePlanes([clip, clip_u, clip_v], [0, 0, 0], vs.YUV)
 
-        if clip.format.bits_per_sample == 16:
-            clip = core.akarin.Expr(clip, ["", "x 0.5 -"])
-        else:
-            clip = core.std.Expr(clip, ["", "x 0.5 -"])
+        clip = _expr(clip, ["", "x 0.5 -"])
     else:
         clip = inference_with_fallback(
             clips=[clip], network_path=network_path,
@@ -3114,3 +3119,14 @@ def parse_trt_version(version: int) -> typing.Tuple[int, int, int]:
         return version // 1000, (version // 100) % 10, version % 100
     else:
         return version // 10000, (version // 100) % 100, version % 100
+
+
+def _expr(
+    clip: vs.VideoNode,
+    expr: typing.Union[str, typing.Sequence[str]],
+    format: typing.Optional[int] = None
+) -> vs.VideoNode:
+    try:
+        return core.akarin.Expr(clip, expr, format)
+    except vs.Exception:
+        return core.std.Expr(clip, expr, format)

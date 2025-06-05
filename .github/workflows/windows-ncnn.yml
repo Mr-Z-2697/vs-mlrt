@@ -70,6 +70,7 @@ jobs:
         -D protobuf_BUILD_SHARED_LIBS=OFF 
         -D protobuf_BUILD_TESTS=OFF
         -D protobuf_MSVC_STATIC_RUNTIME=ON
+        -D CMAKE_POLICY_VERSION_MINIMUM=3.5
 
     - name: Build protobuf
       if: steps.cache-protobuf.outputs.cache-hit != 'true'
@@ -104,6 +105,7 @@ jobs:
         -D ONNX_USE_LITE_PROTO=ON -D ONNX_USE_PROTOBUF_SHARED_LIBS=OFF
         -D ONNX_GEN_PB_TYPE_STUBS=OFF -D ONNX_ML=0
         -D ONNX_USE_MSVC_STATIC_RUNTIME=1
+        -D CMAKE_POLICY_VERSION_MINIMUM=3.5
 
     - name: Build onnx
       if: steps.cache-onnx.outputs.cache-hit != 'true'
