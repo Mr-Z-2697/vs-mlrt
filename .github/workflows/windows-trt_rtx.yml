@@ -1,10 +1,10 @@
-name: Build (Windows-TRT)
+name: Build (Windows-TRT-RTX)
 
 on:
   push:
     paths:
       - 'vstrt/**'
-      - '.github/workflows/windows-trt.yml'
+      - '.github/workflows/windows-trt_rtx.yml'
   workflow_call:
     inputs:
       tag:
@@ -47,7 +47,6 @@ jobs:
       with:
         path: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA
         key: ${{ runner.os }}-vstrt-cuda-12.9.0
-        save-always: true
 
     - name: Setup CUDA
       if: steps.cache-cuda.outputs.cache-hit != 'true'
@@ -55,11 +54,13 @@ jobs:
         curl -s -o cuda_installer.exe -L https://developer.download.nvidia.com/compute/cuda/12.9.0/network_installers/cuda_12.9.0_windows_network.exe
         cuda_installer.exe -s nvcc_12.9 cudart_12.9 cuda_profiler_api_12.9
 
-    - name: Download TensorRT
-      run: |
-        curl -L -o trt.zip https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/10.12.0/zip/TensorRT-10.12.0.36.Windows.win10.cuda-12.9.zip
-        unzip trt.zip
-        mv TensorRT-*/ tensorrt/
+    - name: Checkout TensorRT-RTX
+      uses: actions/checkout@v4
+      with:
+        repository: AmusementClub/cuda
+        token: ${{ secrets.REPO_TOKEN }}
+        ref: tensorrt-rtx-1.0
+        path: tensorrt
 
     - name: Download VapourSynth headers
       run: |
@@ -74,9 +75,8 @@ jobs:
         -D CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
         -D CUDAToolkit_ROOT="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9"
         -D VAPOURSYNTH_INCLUDE_DIRECTORY="%cd%\vapoursynth\include"
-        -D TENSORRT_HOME="%cd%\tensorrt"
-        -D USE_NVINFER_PLUGIN=ON
-        -D TENSORRT_LIBRARY_SUFFIX="_10"
+        -D TENSORRT_HOME="%cd%\..\tensorrt\tensorrt"
+        -D TENSORRT_LIBRARY_SUFFIX="_1_0"
 
     - name: Build
       run: cmake --build build --config Release --verbose
@@ -84,79 +84,35 @@ jobs:
     - name: Install
       run: cmake --install build --prefix install
 
-    - name: Checkout TensorRT OSS
-      uses: actions/checkout@v4
-      with:
-        repository: NVIDIA/TensorRT
-        ref: v10.1.0
-        fetch-depth: 1
-        path: tensorrt-oss
-
-    - name: Override trtexec CMake file
-      run: |
-        cp -f -r -v tensorrt/samples ../tensorrt-oss
-        cp -f -r -v tensorrt/include ../tensorrt-oss
-
-        mv trtexec/CMakeLists.txt ../tensorrt-oss/samples/trtexec
-        mv trtexec/*.cpp ../tensorrt-oss/samples/trtexec
-        mv longpath.manifest ../tensorrt-oss/samples/trtexec
-
-    - name: Apply patch
-      run: |
-        mv trtexec/trtexec.patch ../tensorrt-oss
-        cd ../tensorrt-oss
-
-        copy samples\utils\fileLock.cpp samples\utils\fileLock-utf16le.cpp
-        powershell "Get-Content samples\utils\fileLock-utf16le.cpp | Out-File samples\utils\fileLock.cpp -Encoding ascii"
-        git apply trtexec.patch --verbose
-        copy samples\utils\fileLock.cpp samples\utils\fileLock-utf8.cpp
-        powershell "Get-Content samples\utils\fileLock-utf8.cpp | Out-File samples\utils\fileLock.cpp"
-
-    - name: Configure trtexec
-      run: cmake -S ../tensorrt-oss/samples/trtexec -B build_trtexec -G Ninja
-        -D CMAKE_BUILD_TYPE=Release
-        -D CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
-        -D CUDAToolkit_ROOT="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9"
-        -D CMAKE_UNITY_BUILD=ON -D CMAKE_UNITY_BUILD_BATCH_SIZE=0
-        -D CMAKE_CXX_STANDARD=20
-
-    - name: Build trtexec
-      run: cmake --build build_trtexec --verbose
-
-    - name: Install trtexec
-      run: cmake --install build_trtexec --prefix trtexec
-
     - name: Prepare for upload
       run: |
         mkdir artifact
-        copy install\bin\vstrt.dll artifact\
-        mkdir artifact\vsmlrt-cuda
-        copy trtexec\bin\trtexec.exe artifact\vsmlrt-cuda
+        copy install\bin\vstrt_rtx.dll artifact\
 
     - name: Describe
       run: git describe --tags --long
 
     - name: Dump dependencies
-      run: dumpbin /dependents artifact\vstrt.dll
+      run: dumpbin /dependents artifact\vstrt_rtx.dll
 
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: VSTRT-Windows-x64
+        name: VSTRT-RTX-Windows-x64
         path: vstrt/artifact
 
     - name: Compress artifact for release
       if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag != ''
       run: |
         cd artifact
-        7z a -t7z -mx=7 ../../VSTRT-Windows-x64.${{ github.event.inputs.tag }}.7z .
+        7z a -t7z -mx=7 ../../VSTRT-RTX-Windows-x64.${{ github.event.inputs.tag }}.7z .
 
     - name: Release
       uses: softprops/action-gh-release@v2
       if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag != ''
       with:
         tag_name: ${{ inputs.tag }}
-        files: VSTRT-Windows-x64.${{ github.event.inputs.tag }}.7z
+        files: VSTRT-RTX-Windows-x64.${{ github.event.inputs.tag }}.7z
         fail_on_unmatched_files: true
         generate_release_notes: false
         prerelease: true
