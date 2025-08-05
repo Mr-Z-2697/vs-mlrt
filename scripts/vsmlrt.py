@@ -2591,10 +2591,16 @@ def init_backend(
 
     if isinstance(backend, (Backend.TRT, Backend.TRT_RTX)):
         if backend.opt_shapes is None:
-            backend.opt_shapes = trt_opt_shapes
+            if backend.static_shape:
+                backend.opt_shapes = trt_opt_shapes
+            else:
+                raise ValueError('VSTRT: opt_shapes must be set.')
 
         if backend.max_shapes is None:
-            backend.max_shapes = backend.opt_shapes
+            if backend.static_shape:
+                backend.max_shapes = backend.opt_shapes
+            else:
+                raise ValueError('VSTRT: max_shapes must be set.')
     elif isinstance(backend, Backend.MIGX):
         if backend.opt_shapes is None:
             backend.opt_shapes = trt_opt_shapes
