@@ -157,7 +157,7 @@ class Backend:
         set use_cuda_graph = True
         """
 
-        max_shapes: typing.Optional[typing.Tuple[int, int]] = (1920,1080)
+        max_shapes: typing.Optional[typing.Tuple[int, int]] = None
         opt_shapes: typing.Optional[typing.Tuple[int, int]] = (512,512)
         fp16: bool = True
         device_id: int = 0
@@ -176,7 +176,7 @@ class Backend:
         use_jit_convolutions: bool = True
         heuristic: bool = False # only supported on Ampere+ with TensorRT 8.5+
         output_format: int = 0 # 0: fp32, 1: fp16
-        min_shapes: typing.Tuple[int, int] = (32,32)
+        min_shapes: typing.Tuple[int, int] = (64,64)
         faster_dynamic_shapes: bool = True
         force_fp16: bool = False
         builder_optimization_level: int = 3
