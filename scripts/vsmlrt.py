@@ -1887,7 +1887,7 @@ def get_engine_path(
     int8: bool,
     bf16: bool,
     fp8: bool,
-    engine_folder: typing.Optional[str]
+    engine_folder: typing.Optional[str],
     is_rtx: bool = False,
 ) -> str:
 
