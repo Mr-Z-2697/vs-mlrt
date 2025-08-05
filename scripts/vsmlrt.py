@@ -1,4 +1,4 @@
-__version__ = "3.22.19"
+__version__ = "3.22.21"
 
 __all__ = [
     "Backend", "BackendV2",
@@ -1315,16 +1315,6 @@ def RIFE(
         else:
             return res
     else:
-        if isinstance(multi,float):
-            multi=Fraction(multi)
-        if not hasattr(core, 'akarin') or \
-            not hasattr(core.akarin, 'PropExpr') or \
-            not hasattr(core.akarin, 'PickFrames'):
-            raise RuntimeError(
-                'fractional multi requires plugin akarin '
-                '(https://github.com/AkarinVS/vapoursynth-plugin/releases)'
-                ', version v0.96g or later.')
-
         if clip.fps_num == 0 or clip.fps_den == 0:
             src_fps = Fraction(1)
         else:
@@ -1776,6 +1766,7 @@ class ArtCNNModel(enum.IntEnum):
     ArtCNN_R8F64_Chroma = 9
     ArtCNN_C4F16 = 10
     ArtCNN_C4F16_DS = 11
+    ArtCNN_R16F96_Chroma = 12
 
 
 def ArtCNN(
@@ -1799,7 +1790,12 @@ def ArtCNN(
     if not isinstance(model, int) or model not in ArtCNNModel.__members__.values():
         raise ValueError(f'{func_name}: invalid "model"')
 
-    if model in (4, 5, 9):
+    if model in (
+        ArtCNNModel.ArtCNN_C4F32_Chroma,
+        ArtCNNModel.ArtCNN_C16F64_Chroma,
+        ArtCNNModel.ArtCNN_R8F64_Chroma,
+        ArtCNNModel.ArtCNN_R16F96_Chroma,
+    ):
         if clip.format.color_family != vs.YUV:
             raise ValueError(f'{func_name}: "clip" must be of YUV color family')
         if clip.format.subsampling_h != 0 or clip.format.subsampling_w != 0:
@@ -1844,7 +1840,12 @@ def ArtCNN(
         f"{model_name}.onnx"
     )
 
-    if model in (4, 5, 9):
+    if model in (
+        ArtCNNModel.ArtCNN_C4F32_Chroma,
+        ArtCNNModel.ArtCNN_C16F64_Chroma,
+        ArtCNNModel.ArtCNN_R8F64_Chroma,
+        ArtCNNModel.ArtCNN_R16F96_Chroma
+    ):
         clip = _expr(clip, ["", "x 0.5 +"])
 
         clip_u, clip_v = flexible_inference_with_fallback(
@@ -3400,5 +3401,5 @@ def _expr(
 ) -> vs.VideoNode:
     try:
         return core.akarin.Expr(clip, expr, format)
-    except vs.Exception:
+    except vs.Error:
         return core.std.Expr(clip, expr, format)
