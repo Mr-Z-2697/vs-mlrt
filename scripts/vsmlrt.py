@@ -322,7 +322,7 @@ class Backend:
         tiling_optimization_level: int = 0
         l2_limit_for_tiling: int = -1
 
-        timing_cache: typing.Optional[typing.Union[str,bool]] = r'D:\vstrt.cache' if os.name=='nt' and os.getlogin()=='55087' else None # if it's me LOL
+        timing_cache: typing.Optional[typing.Union[str,bool]] = r'D:\vstrt_rtx.cache' if os.name=='nt' and os.getlogin()=='55087' else None # if it's me LOL
 
         # internal backend attributes
         supports_onnx_serialization: bool = False
