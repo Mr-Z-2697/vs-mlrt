@@ -322,6 +322,8 @@ class Backend:
         tiling_optimization_level: int = 0
         l2_limit_for_tiling: int = -1
 
+        timing_cache: typing.Optional[typing.Union[str,bool]] = r'D:\vstrt.cache' if os.name=='nt' and os.getlogin()=='55087' else None # if it's me LOL
+
         # internal backend attributes
         supports_onnx_serialization: bool = False
 
@@ -2389,6 +2391,7 @@ def tensorrt_rtx(
     short_path: typing.Optional[bool] = None,
     custom_env: typing.Dict[str, str] = {},
     custom_args: typing.List[str] = [],
+    timing_cache: str = None,
     engine_folder: typing.Optional[str] = None,
     max_tactics: typing.Optional[int] = None,
     tiling_optimization_level: int = 0,
@@ -2461,11 +2464,15 @@ def tensorrt_rtx(
     args = [
         tensorrt_rtx_path,
         f"--onnx={network_path}",
-        f"--timingCacheFile={engine_path}.cache",
         f"--device={device_id}",
         f"--saveEngine={engine_path}",
         "--useGpu",
     ]
+
+    if isinstance(timing_cache, (str,os.PathLike) ):
+        args.append(f"--timingCacheFile={timing_cache}")
+    elif timing_cache is None or timing_cache is True:
+        args.append(f"--timingCacheFile={network_path}.cache")
 
     if workspace is not None:
         args.append(f"--memPoolSize=workspace:{workspace}")
@@ -2967,6 +2974,7 @@ def _inference(
             short_path=backend.short_path,
             custom_env=backend.custom_env,
             custom_args=backend.custom_args,
+            timing_cache=backend.timing_cache,
             engine_folder=backend.engine_folder,
             max_tactics=backend.max_tactics,
             tiling_optimization_level=backend.tiling_optimization_level,
