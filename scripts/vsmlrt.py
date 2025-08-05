@@ -2409,7 +2409,7 @@ def tensorrt_rtx(
         network_path = f"{network_path}_fp16.onnx"
         onnx.save(model, network_path) # TODO
 
-    engine_path = get_engine_path(
+    engine_paths = get_engine_path(
         network_path=network_path,
         min_shapes=min_shapes,
         opt_shapes=opt_shapes,
@@ -2427,9 +2427,28 @@ def tensorrt_rtx(
         max_aux_streams=max_aux_streams,
         short_path=short_path,
         bf16=False,
+        int8=False,
+        fp8=False,
         engine_folder=engine_folder,
         is_rtx=True,
     )
+
+    use_short_path = False
+
+    if short_path:
+        use_short_path = True
+    # limitation of Windows: 256 characters, Linux: 255 bytes
+    elif len(os.path.split(engine_paths[0])[1].encode()) >= 255:
+        use_short_path = True
+    elif platform.system() == "Windows":
+        # use short path by default
+        if short_path is None:
+            use_short_path = True
+
+    if use_short_path:
+        engine_path = engine_paths[1]
+    else:
+        engine_path = engine_paths[0]
 
     if os.access(engine_path, mode=os.R_OK):
         return engine_path
@@ -2529,6 +2548,10 @@ def tensorrt_rtx(
     env = {"CUDA_MODULE_LOADING": "LAZY"}
     env.update(**custom_env)
     subprocess.run(args, env=env, check=True, stdout=sys.stderr)
+
+    if use_short_path:
+        with open(engine_path[:-7]+".txt", "w") as desc:
+            desc.write(os.path.split(engine_paths[0])[-1])
 
     return engine_path
 
