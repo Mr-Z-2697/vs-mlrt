@@ -314,7 +314,7 @@ class Backend:
         # output_format: int = 0 # 0: fp32, 1: fp16
         builder_optimization_level: int = 3
         max_aux_streams: typing.Optional[int] = None
-        short_path: typing.Optional[bool] = None # True on Windows by default, False otherwise
+        short_path: typing.Optional[bool] = False
         custom_env: typing.Dict[str, str] = field(default_factory=lambda: {})
         custom_args: typing.List[str] = field(default_factory=lambda: [])
         engine_folder: typing.Optional[str] = None
