@@ -1,4 +1,4 @@
-__version__ = "3.22.21"
+__version__ = "3.22.24"
 
 __all__ = [
     "Backend", "BackendV2",
@@ -89,6 +89,7 @@ class Backend:
         verbosity: int = 2
         fp16: bool = False
         fp16_blacklist_ops: typing.Optional[typing.Sequence[str]] = None
+        output_format: int = 0 # 0: fp32, 1: fp16
 
         # internal backend attributes
         supports_onnx_serialization: bool = True
@@ -239,6 +240,7 @@ class Backend:
         verbosity: int = 2
         fp16: bool = False
         fp16_blacklist_ops: typing.Optional[typing.Sequence[str]] = None
+        output_format: int = 0 # 0: fp32, 1: fp16
 
         # internal backend attributes
         supports_onnx_serialization: bool = True
@@ -281,6 +283,7 @@ class Backend:
         fp16: bool = False
         fp16_blacklist_ops: typing.Optional[typing.Sequence[str]] = None
         ml_program: int = 0
+        output_format: int = 0 # 0: fp32, 1: fp16
 
         # internal backend attributes
         supports_onnx_serialization: bool = True
@@ -1891,18 +1894,12 @@ def get_engine_path(
     fp8: bool,
     engine_folder: typing.Optional[str],
     is_rtx: bool = False,
+    trt_version: int = 0,
+    device_name: str = "",
 ) -> str:
 
     with open(network_path, "rb") as file:
         checksum = zlib.adler32(file.read())
-
-    trt_version = core.trt.Version()["tensorrt_version"].decode()
-
-    try:
-        device_name = core.trt.DeviceProperties(device_id)["name"].decode()
-        device_name = device_name.replace(' ', '-')
-    except AttributeError:
-        device_name = f"device{device_id}"
 
     if static_shape:
         shape_str = f"{opt_shapes[0]}x{opt_shapes[1]}"
@@ -2000,6 +1997,14 @@ def trtexec(
         bf16 = False
         fp8 = False
 
+    trt_version = core.trt.Version()["tensorrt_version"].decode()
+
+    try:
+        device_name = core.trt.DeviceProperties(device_id)["name"].decode()
+        device_name = device_name.replace(' ', '-')
+    except AttributeError:
+        device_name = f"device{device_id}"
+
     engine_paths = get_engine_path(
         network_path=network_path,
         min_shapes=min_shapes,
@@ -2021,6 +2026,8 @@ def trtexec(
         bf16=bf16,
         fp8=fp8,
         engine_folder=engine_folder,
+        trt_version=trt_version,
+        device_name=device_name,
     )
 
     use_short_path = False
@@ -2396,6 +2403,7 @@ def tensorrt_rtx(
     max_tactics: typing.Optional[int] = None,
     tiling_optimization_level: int = 0,
     l2_limit_for_tiling: int = -1,
+    fp16_io: bool = False,
 ) -> str:
 
     # tensort runtime version
@@ -2405,9 +2413,19 @@ def tensorrt_rtx(
         import onnx
         from onnxconverter_common.float16 import convert_float_to_float16
         model = onnx.load(network_path)
-        model = convert_float_to_float16(model, keep_io_types=True)
-        network_path = f"{network_path}_fp16.onnx"
+        model = convert_float_to_float16(model, keep_io_types=not fp16_io)
+        network_path = f"{network_path}_fp16{'_io' if fp16_io else ''}.onnx"
         onnx.save(model, network_path) # TODO
+    elif fp16_io:
+        raise ValueError('tensorrt_rtx: "fp16" must be True.')
+
+    trt_version = core.trt_rtx.Version()["tensorrt_version"].decode()
+
+    try:
+        device_name = core.trt_rtx.DeviceProperties(device_id)["name"].decode()
+        device_name = device_name.replace(' ', '-')
+    except AttributeError:
+        device_name = f"device{device_id}"
 
     engine_paths = get_engine_path(
         network_path=network_path,
@@ -2421,8 +2439,8 @@ def tensorrt_rtx(
         static_shape=static_shape,
         tf32=False,
         use_cudnn=False,
-        input_format=0,
-        output_format=0,
+        input_format=int(fp16_io),
+        output_format=int(fp16_io),
         builder_optimization_level=builder_optimization_level,
         max_aux_streams=max_aux_streams,
         short_path=short_path,
@@ -2431,6 +2449,8 @@ def tensorrt_rtx(
         fp8=False,
         engine_folder=engine_folder,
         is_rtx=True,
+        trt_version=trt_version,
+        device_name=device_name,
     )
 
     use_short_path = False
@@ -2748,6 +2768,16 @@ def _inference(
     if flexible_output_prop is not None:
         kwargs["flexible_output_prop"] = flexible_output_prop
 
+    if isinstance(backend, (Backend.ORT_CPU, Backend.ORT_DML, Backend.ORT_COREML, Backend.ORT_CUDA)):
+        version_list = core.ort.Version().get("onnxruntime_version", b"0.0.0").split(b'.')
+        if len(version_list) != 3:
+            version = (0, 0, 0)
+        else:
+            version = tuple(map(int, version_list))
+
+        if version >= (1, 18, 0):
+            kwargs["output_format"] = backend.output_format
+
     if isinstance(backend, Backend.ORT_CPU):
         ret = core.ort.Model(
             clips, network_path,
@@ -2792,7 +2822,6 @@ def _inference(
 
         if version >= (1, 18, 0):
             kwargs["prefer_nhwc"] = backend.prefer_nhwc
-            kwargs["output_format"] = backend.output_format
             kwargs["tf32"] = backend.tf32
 
         ret = core.ort.Model(
@@ -2990,8 +3019,6 @@ def _inference(
             use_cudnn=backend.use_cudnn,
             use_edge_mask_convolutions=backend.use_edge_mask_convolutions,
             input_name=input_name,
-            # input_format=clips[0].format.bits_per_sample == 16,
-            # output_format=backend.output_format,
             builder_optimization_level=backend.builder_optimization_level,
             max_aux_streams=backend.max_aux_streams,
             short_path=backend.short_path,
@@ -3002,6 +3029,11 @@ def _inference(
             max_tactics=backend.max_tactics,
             tiling_optimization_level=backend.tiling_optimization_level,
             l2_limit_for_tiling=backend.l2_limit_for_tiling,
+
+            # the following option is experimental
+            # input_format=clips[0].format.bits_per_sample == 16,
+            # output_format=backend.output_format,
+            fp16_io=clips[0].format.bits_per_sample == 16
         )
         ret = core.trt_rtx.Model(
             clips, engine_path,
