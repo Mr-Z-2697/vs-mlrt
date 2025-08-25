@@ -1,4 +1,4 @@
-__version__ = "3.22.24"
+__version__ = "3.22.28"
 
 __all__ = [
     "Backend", "BackendV2",
@@ -29,6 +29,7 @@ import sys
 import tempfile
 import time
 import typing
+import warnings
 import zlib
 
 import vapoursynth as vs
@@ -58,6 +59,12 @@ def get_plugins_path() -> str:
     if path == b"":
         try:
             path = core.trt.Version()["path"]
+        except AttributeError:
+            pass
+
+    if path == b"":
+        try:
+            path = core.trt_rtx.Version()["path"]
         except AttributeError:
             pass
 
@@ -1892,7 +1899,7 @@ def get_engine_path(
     fp8: bool,
     engine_folder: typing.Optional[str],
     is_rtx: bool = False,
-    trt_version: int = 0,
+    trt_version: typing.Tuple[int, int, int] = (0, 0, 0),
     device_name: str = "",
 ) -> str:
 
@@ -1918,7 +1925,7 @@ def get_engine_path(
         (f"_workspace{workspace}" if workspace is not None else "") +
         f"_opt{builder_optimization_level}" +
         (f"_max-aux-streams{max_aux_streams}" if max_aux_streams is not None else "") +
-        f"_trt-{trt_version}" +
+        "_trt-" + '.'.join(map(str, trt_version)) +
         ("_cublas" if use_cublas else "") +
         ("_cudnn" if use_cudnn else "") +
         "_I-" + ("fp32" if input_format == 0 else "fp16") +
@@ -1994,8 +2001,6 @@ def trtexec(
         int8 = False
         bf16 = False
         fp8 = False
-
-    trt_version = core.trt.Version()["tensorrt_version"].decode()
 
     try:
         device_name = core.trt.DeviceProperties(device_id)["name"].decode()
@@ -2404,19 +2409,30 @@ def tensorrt_rtx(
 ) -> str:
 
     # tensort runtime version
-    # trt_version = parse_trt_version(int(core.trt_rtx.Version()["tensorrt_version"]))
+    trt_version = parse_trt_version(int(core.trt_rtx.Version()["tensorrt_version"]))
 
     if fp16:
-        import onnx
-        from onnxconverter_common.float16 import convert_float_to_float16
-        model = onnx.load(network_path)
-        model = convert_float_to_float16(model, keep_io_types=not fp16_io)
-        network_path = f"{network_path}_fp16{'_io' if fp16_io else ''}.onnx"
-        onnx.save(model, network_path) # TODO
+        with open(network_path, "rb") as file:
+            checksum = zlib.adler32(file.read())
+
+        dirname, basename = os.path.split(network_path)
+
+        if engine_folder is not None:
+            os.makedirs(engine_folder, exist_ok=True)
+            dirname = engine_folder
+
+        fp16_network_path = f"{os.path.join(dirname, basename)}_{checksum}_fp16{'_io' if fp16_io else ''}.onnx"
+        if not os.access(fp16_network_path, mode=os.R_OK):
+            import onnx
+            from onnxconverter_common.float16 import convert_float_to_float16
+            model = onnx.load(network_path)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                model = convert_float_to_float16(model, keep_io_types=not fp16_io)
+            onnx.save(model, fp16_network_path)
+        network_path = fp16_network_path
     elif fp16_io:
         raise ValueError('tensorrt_rtx: "fp16" must be True.')
-
-    trt_version = core.trt_rtx.Version()["tensorrt_version"].decode()
 
     try:
         device_name = core.trt_rtx.DeviceProperties(device_id)["name"].decode()
