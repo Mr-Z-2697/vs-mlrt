@@ -3504,5 +3504,7 @@ def _pickframes(
 ) -> vs.VideoNode:
     if hasattr(core, 'akarin') and hasattr(core.akarin, 'PickFrames'):
         return core.akarin.PickFrames(clip, indices)
+    elif hasattr(core, 'pickframes'):
+        return core.pickframes.pickframes(clip, indices)
     else:
         return core.std.SelectEvery(clip, clip.num_frames, indices, False)
