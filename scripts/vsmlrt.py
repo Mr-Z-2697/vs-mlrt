@@ -3505,6 +3505,4 @@ def _pickframes(
     if hasattr(core, 'akarin') and hasattr(core.akarin, 'PickFrames'):
         return core.akarin.PickFrames(clip, indices)
     else:
-        indices = set(indices)
-        secidni = [i for i in range(clip.num_frames) if not i in indices]
-        return core.std.DeleteFrames(clip,secidni)
+        return core.std.SelectEvery(clip, clip.num_frames, indices, False)
