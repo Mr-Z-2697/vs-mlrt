@@ -6,6 +6,7 @@
 #include <ios>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <variant>
@@ -68,6 +69,8 @@ struct TicketSemaphore {
     }
 };
 
+std::unique_ptr<Logger> logger;
+
 struct vsTrtData {
     std::vector<VSNodeRef *> nodes;
     std::unique_ptr<VSVideoInfo> out_vi;
@@ -77,7 +80,6 @@ struct vsTrtData {
     bool use_cuda_graph;
     int overlap_w, overlap_h;
 
-    Logger logger;
     std::unique_ptr<nvinfer1::IRuntime> runtime;
     std::vector<std::unique_ptr<nvinfer1::ICudaEngine>> engines;
 
@@ -396,7 +398,10 @@ static void VS_CC vsTrtCreate(
     if (error) {
         verbosity = int(nvinfer1::ILogger::Severity::kWARNING);
     }
-    d->logger.set_verbosity(static_cast<nvinfer1::ILogger::Severity>(verbosity));
+    if (!logger) {
+        logger = std::make_unique<Logger>();
+    }
+    logger->set_verbosity(static_cast<nvinfer1::ILogger::Severity>(verbosity));
 
     auto flexible_output_prop = vsapi->propGetData(in, "flexible_output_prop", 0, &error);
     if (!error) {
@@ -406,7 +411,7 @@ static void VS_CC vsTrtCreate(
 #ifdef USE_NVINFER_PLUGIN
     // related to https://github.com/AmusementClub/vs-mlrt/discussions/65, for unknown reason
 #if !(NV_TENSORRT_MAJOR == 9 && defined(_WIN32)) && !defined(TRT_MAJOR_RTX)
-    if (!initLibNvInferPlugins(&d->logger, "")) {
+    if (!initLibNvInferPlugins(logger.get(), "")) {
         vsapi->logMessage(mtWarning, "vstrt: Initialize TensorRT plugins failed");
     }
 #endif
@@ -432,7 +437,44 @@ static void VS_CC vsTrtCreate(
     engine_stream.seekg(0, std::ios::beg);
     engine_stream.read(engine_data.get(), static_cast<std::streamsize>(engine_nbytes));
 
-    d->runtime.reset(nvinfer1::createInferRuntime(d->logger));
+    d->runtime.reset(nvinfer1::createInferRuntime(*logger));
+#if defined(TRT_MAJOR_RTX) && NV_TENSORRT_VERSION >= 10100
+    if (static_cast<int64_t>(engine_nbytes) < d->runtime->getEngineHeaderSize()) {
+        return set_error("invalid engine size: " + std::to_string(engine_nbytes));
+    }
+    {
+        uint64_t diagnostics;
+        auto engine_validity = d->runtime->getEngineValidity(engine_data.get(), static_cast<int64_t>(engine_nbytes), &diagnostics);
+        if (engine_validity == nvinfer1::EngineValidity::kSUBOPTIMAL) {
+            vsapi->logMessage(mtWarning, "suboptimal engine");
+        } else if (engine_validity == nvinfer1::EngineValidity::kINVALID) {
+            std::ostringstream diagnostics_message;
+            diagnostics_message << "invalid engine: ";
+            if (diagnostics & static_cast<uint64_t>(nvinfer1::EngineInvalidityDiagnostics::kVERSION_MISMATCH)) {
+                diagnostics_message << "trt version mismatch, ";
+            }
+            if (diagnostics & static_cast<uint64_t>(nvinfer1::EngineInvalidityDiagnostics::kUNSUPPORTED_CC)) {
+                diagnostics_message << "unsupported compute capability, ";
+            }
+            if (diagnostics & static_cast<uint64_t>(nvinfer1::EngineInvalidityDiagnostics::kOLD_CUDA_DRIVER)) {
+                diagnostics_message << "cuda driver too old, ";
+            }
+            if (diagnostics & static_cast<uint64_t>(nvinfer1::EngineInvalidityDiagnostics::kOLD_CUDA_RUNTIME)) {
+                diagnostics_message << "cuda runtime too old, ";
+            }
+            if (diagnostics & static_cast<uint64_t>(nvinfer1::EngineInvalidityDiagnostics::kINSUFFICIENT_GPU_MEMORY)) {
+                diagnostics_message << "insufficient gpu memory, ";
+            }
+            if (diagnostics & static_cast<uint64_t>(nvinfer1::EngineInvalidityDiagnostics::kMALFORMED_ENGINE)) {
+                diagnostics_message << "malformed engine, ";
+            }
+            if (diagnostics & static_cast<uint64_t>(nvinfer1::EngineInvalidityDiagnostics::kCUDA_ERROR)) {
+                diagnostics_message << "cuda error, ";
+            }
+            return set_error(diagnostics_message.str());
+        }
+    }
+#endif
     auto maybe_engine = initEngine(
         engine_data.get(),
         static_cast<size_t>(engine_nbytes),

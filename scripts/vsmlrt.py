@@ -1,4 +1,4 @@
-__version__ = "3.22.31"
+__version__ = "3.22.36"
 
 __all__ = [
     "Backend", "BackendV2",
@@ -234,6 +234,7 @@ class Backend:
         fp16: bool = False
         device_id: int = 0
         num_streams: int = 1
+        output_format: int = 0 # 0: fp32, 1: fp16
 
         # internal backend attributes
         supports_onnx_serialization: bool = True
@@ -1777,6 +1778,10 @@ class ArtCNNModel(enum.IntEnum):
     ArtCNN_C4F16 = 10
     ArtCNN_C4F16_DS = 11
     ArtCNN_R16F96_Chroma = 12
+    ArtCNN_C4F16_DN = 13
+    ArtCNN_C4F32_DN = 14
+    ArtCNN_R8F64_JPEG420 = 15
+    ArtCNN_R8F64_JPEG444 = 16
 
 
 def ArtCNN(
@@ -1813,6 +1818,12 @@ def ArtCNN(
                 f'{func_name}: "clip" must be without subsampling! '
                 'Bilinear upsampling is recommended.'
             )
+    elif model in (
+        ArtCNNModel.ArtCNN_R8F64_JPEG420,
+        ArtCNNModel.ArtCNN_R8F64_JPEG444,
+    ):
+        if clip.format.color_family != vs.RGB:
+            raise ValueError(f'{func_name}: "clip" must be of RGB color family')
     elif clip.format.color_family != vs.GRAY:
         raise ValueError(f'{func_name}: "clip" must be of GRAY color family')
 
@@ -1884,7 +1895,6 @@ def get_engine_path(
     max_shapes: typing.Tuple[int, int],
     workspace: typing.Optional[int],
     fp16: bool,
-    device_id: int,
     use_cublas: bool,
     static_shape: bool,
     tf32: bool,
@@ -2015,7 +2025,6 @@ def trtexec(
         max_shapes=max_shapes,
         workspace=workspace,
         fp16=fp16,
-        device_id=device_id,
         use_cublas=use_cublas,
         static_shape=static_shape,
         tf32=tf32,
@@ -2054,7 +2063,7 @@ def trtexec(
         if len(engine_path) > 255 and platform.system() == "Windows":
             raise ValueError("Engine path will exceed windows limit, try use short_path.")
 
-    if os.access(engine_path, mode=os.R_OK):
+    if os.access(engine_path, mode=os.R_OK) and os.path.getsize(engine_path) >= 1024:
         return engine_path
 
     # do not consider alternative path when the engine_folder is given
@@ -2064,7 +2073,7 @@ def trtexec(
             os.path.splitdrive(engine_path)[1][1:]
         )
 
-        if os.access(alter_engine_path, mode=os.R_OK):
+        if os.access(alter_engine_path, mode=os.R_OK) and os.path.getsize(alter_engine_path) >= 1024:
             return alter_engine_path
 
     try:
@@ -2325,7 +2334,7 @@ def migraphx_driver(
         short_path=short_path
     )
 
-    if os.access(mxr_path, mode=os.R_OK):
+    if os.access(mxr_path, mode=os.R_OK) and os.path.getsize(mxr_path) >= 1024:
         return mxr_path
 
     alter_mxr_path = os.path.join(
@@ -2333,7 +2342,7 @@ def migraphx_driver(
         os.path.splitdrive(mxr_path)[1][1:]
     )
 
-    if os.access(alter_mxr_path, mode=os.R_OK):
+    if os.access(alter_mxr_path, mode=os.R_OK) and os.path.getsize(mxr_path) >= 1024:
         return alter_mxr_path
 
     try:
@@ -2422,7 +2431,7 @@ def tensorrt_rtx(
             dirname = engine_folder
 
         fp16_network_path = f"{os.path.join(dirname, basename)}_{checksum}_fp16{'_io' if fp16_io else ''}.onnx"
-        if not os.access(fp16_network_path, mode=os.R_OK):
+        if not (os.access(fp16_network_path, mode=os.R_OK) and os.path.getsize(fp16_network_path) >= 1024):
             import onnx
             model = onnx.load(network_path)
             try:
@@ -2453,11 +2462,10 @@ def tensorrt_rtx(
         max_shapes=max_shapes,
         workspace=workspace,
         fp16=fp16,
-        device_id=device_id,
         use_cublas=False,
         static_shape=static_shape,
         tf32=False,
-        use_cudnn=False,
+        use_cudnn=use_cudnn,
         input_format=int(fp16_io),
         output_format=int(fp16_io),
         builder_optimization_level=builder_optimization_level,
@@ -2489,7 +2497,7 @@ def tensorrt_rtx(
     else:
         engine_path = engine_paths[0]
 
-    if os.access(engine_path, mode=os.R_OK):
+    if os.access(engine_path, mode=os.R_OK) and os.path.getsize(engine_path) >= 1024:
         return engine_path
 
     # do not consider alternative path when the engine_folder is given
@@ -2499,7 +2507,7 @@ def tensorrt_rtx(
             os.path.splitdrive(engine_path)[1][1:]
         )
 
-        if os.access(alter_engine_path, mode=os.R_OK):
+        if os.access(alter_engine_path, mode=os.R_OK) and os.path.getsize(alter_engine_path) >= 1024:
             return alter_engine_path
 
     try:
@@ -2790,6 +2798,10 @@ def _inference(
             version = tuple(map(int, version_list))
 
         if version >= (1, 18, 0):
+            kwargs["output_format"] = backend.output_format
+
+    elif isinstance(backend, Backend.NCNN_VK):
+        if "output_format" in core.ncnn.Model.signature:
             kwargs["output_format"] = backend.output_format
 
     if isinstance(backend, Backend.ORT_CPU):
