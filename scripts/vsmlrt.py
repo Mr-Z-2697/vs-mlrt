@@ -1326,7 +1326,8 @@ def RIFE(
         else:
             return res
     else:
-        multi = Fraction(int(multi*1000),1000)
+        if isinstance(multi, float):
+            multi = Fraction(int(multi*1000),1000)
         if clip.fps_num == 0 or clip.fps_den == 0:
             src_fps = Fraction(1)
         else:
