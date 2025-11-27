@@ -919,11 +919,12 @@ def get_rife_input(clip: vs.VideoNode) -> typing.List[vs.VideoNode]:
     gray_format = vs.GRAYS if clip.format.bits_per_sample == 32 else vs.GRAYH
 
 
+    _expr_features = [i.encode() if isinstance(i, str) else i for i in core.akarin.Version()["expr_features"]]
     if (hasattr(core, 'akarin') and
-        b"width" in core.akarin.Version()["expr_features"] and
-        b"height" in core.akarin.Version()["expr_features"]
+        b"width" in _expr_features and
+        b"height" in _expr_features
     ):
-        if b"fp16" in core.akarin.Version()["expr_features"]:
+        if b"fp16" in _expr_features:
             empty = clip.std.BlankClip(format=gray_format, length=1)
         else:
             empty = clip.std.BlankClip(format=vs.GRAYS, length=1)
